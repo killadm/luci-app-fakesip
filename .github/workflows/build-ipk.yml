@@ -1,0 +1,100 @@
+name: Build IPK
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  IMMORTALWRT_VERSION: 24.10.5
+  TARGET: mediatek/filogic
+  SDK_FILE: immortalwrt-sdk-24.10.5-mediatek-filogic_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+  SDK_SHA256: a4e44fd91d867edafb618be4164a4ca0a36336ddfbf4493b3c5ac5cb32a92572
+
+jobs:
+  build:
+    name: ImmortalWrt 24.10.5 mediatek/filogic
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            curl \
+            file \
+            flex \
+            gawk \
+            gcc-multilib \
+            gettext \
+            git \
+            libncurses-dev \
+            libssl-dev \
+            python3 \
+            python3-distutils \
+            python3-setuptools \
+            rsync \
+            unzip \
+            wget \
+            zlib1g-dev \
+            zstd
+
+      - name: Download ImmortalWrt SDK
+        run: |
+          set -euo pipefail
+          SDK_URL="https://downloads.immortalwrt.org/releases/${IMMORTALWRT_VERSION}/targets/${TARGET}/${SDK_FILE}"
+          curl -fL --retry 5 --retry-delay 5 -o sdk.tar.zst "${SDK_URL}"
+          echo "${SDK_SHA256}  sdk.tar.zst" | sha256sum -c -
+          mkdir sdk
+          tar --zstd -xf sdk.tar.zst -C sdk --strip-components=1
+
+      - name: Add local feed
+        working-directory: sdk
+        run: |
+          set -euo pipefail
+          echo "src-link fakesip ${GITHUB_WORKSPACE}" >> feeds.conf.default
+          ./scripts/feeds update -a
+          for pkg in libmnl libnfnetlink libnetfilter-queue luci-base; do
+            ./scripts/feeds install "${pkg}" || true
+          done
+          ./scripts/feeds install -p fakesip fakesip luci-app-fakesip
+
+      - name: Configure packages
+        working-directory: sdk
+        run: |
+          set -euo pipefail
+          cat > .config <<'EOF'
+          CONFIG_PACKAGE_fakesip=m
+          CONFIG_PACKAGE_luci-app-fakesip=m
+          EOF
+          make defconfig
+
+      - name: Build IPK packages
+        working-directory: sdk
+        run: |
+          set -euo pipefail
+          make package/fakesip/compile V=s -j"$(nproc)"
+          make package/luci-app-fakesip/compile V=s -j"$(nproc)"
+
+      - name: Collect IPK artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          find sdk/bin/packages -type f \( \
+            -name 'fakesip_*.ipk' -o \
+            -name 'luci-app-fakesip_*.ipk' \
+          \) -print -exec cp -v {} artifacts/ \;
+          test -n "$(find artifacts -type f -name '*.ipk' -print -quit)"
+          sha256sum artifacts/*.ipk > artifacts/sha256sums.txt
+
+      - name: Upload IPK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fakesip-ipk-immortalwrt-24.10.5-mediatek-filogic
+          path: artifacts/
+          if-no-files-found: error

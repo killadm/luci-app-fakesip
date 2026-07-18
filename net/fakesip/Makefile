@@ -1,0 +1,67 @@
+include $(TOPDIR)/rules.mk
+
+PKG_NAME:=fakesip
+PKG_VERSION:=0.0.0_git20250730
+PKG_RELEASE:=1
+
+PKG_SOURCE_PROTO:=git
+PKG_SOURCE_URL:=https://github.com/MikeWang000000/FakeSIP.git
+PKG_SOURCE_DATE:=2025-07-30
+PKG_SOURCE_VERSION:=d4440ae146e5d9ecd1fa33b47661b4d8c7eb4641
+PKG_MIRROR_HASH:=skip
+
+PKG_MAINTAINER:=FakeSIP LuCI feed
+PKG_LICENSE:=GPL-3.0-or-later
+PKG_LICENSE_FILES:=LICENSE
+
+include $(INCLUDE_DIR)/package.mk
+
+define Package/fakesip
+  SECTION:=net
+  CATEGORY:=Network
+  SUBMENU:=Firewall
+  TITLE:=Disguise UDP traffic as SIP with NFQUEUE
+  URL:=https://github.com/MikeWang000000/FakeSIP
+  DEPENDS:=+libnetfilter-queue +libnfnetlink +libmnl +nftables +kmod-nfnetlink-queue +kmod-nft-queue
+endef
+
+define Package/fakesip/description
+FakeSIP disguises UDP traffic as SIP-like traffic through Netfilter Queue.
+endef
+
+define Package/fakesip/conffiles
+/etc/config/fakesip
+endef
+
+define Build/Compile
+	$(MAKE) -C $(PKG_BUILD_DIR) \
+		CC="$(TARGET_CC)" \
+		STRIP="$(TARGET_CROSS)strip" \
+		CFLAGS="$(TARGET_CFLAGS) $(TARGET_CPPFLAGS)" \
+		LDFLAGS="$(TARGET_LDFLAGS)" \
+		PREFIX="/usr" \
+		VERSION="$(PKG_VERSION)"
+endef
+
+define Package/fakesip/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/build/fakesip $(1)/usr/bin/fakesip
+	$(INSTALL_DIR) $(1)/etc/config
+	$(INSTALL_CONF) ./files/etc/config/fakesip $(1)/etc/config/fakesip
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_BIN) ./files/etc/init.d/fakesip $(1)/etc/init.d/fakesip
+	$(INSTALL_DIR) $(1)/usr/libexec
+	$(INSTALL_BIN) ./files/usr/libexec/fakesip-scheduled-restart $(1)/usr/libexec/fakesip-scheduled-restart
+endef
+
+define Package/fakesip/prerm
+#!/bin/sh
+[ -n "$$IPKG_INSTROOT" ] || {
+	/etc/init.d/fakesip stop_now >/dev/null 2>&1 || true
+	/etc/init.d/fakesip clear_cron >/dev/null 2>&1 || true
+	/etc/init.d/fakesip disable >/dev/null 2>&1 || true
+}
+exit 0
+endef
+
+$(eval $(call BuildPackage,fakesip))

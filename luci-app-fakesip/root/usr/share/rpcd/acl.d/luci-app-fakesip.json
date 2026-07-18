@@ -1,0 +1,22 @@
+{
+	"luci-app-fakesip": {
+		"description": "Grant access to LuCI app FakeSIP",
+		"read": {
+			"uci": [ "fakesip" ],
+			"ubus": {
+				"service": [ "list" ]
+			},
+			"file": {
+				"/etc/crontabs/root": [ "read" ],
+				"/var/log/fakesip/fakesip.log": [ "read" ],
+				"/sbin/logread": [ "exec" ]
+			}
+		},
+		"write": {
+			"uci": [ "fakesip" ],
+			"file": {
+				"/etc/init.d/fakesip": [ "exec" ]
+			}
+		}
+	}
+}
