@@ -17,6 +17,7 @@ SCHEDULE_HELPER="/usr/libexec/fakesip-scheduled-restart"
 RUN_DIR="/var/run/fakesip"
 STAMP_FILE="$RUN_DIR/restart.stamp"
 DEFAULT_LOG_FILE="/var/log/fakesip/fakesip.log"
+LOG_DIR="/var/log/fakesip"
 DEFAULT_LOG_MAX_SIZE_KB="512"
 DEFAULT_LOG_ROTATE_COUNT="3"
 
@@ -125,16 +126,30 @@ validate_log_rotation_config() {
 	local log_file="$1"
 	local log_max_size_kb="$2"
 	local log_rotate_count="$3"
+	local base
 
 	[ -n "$log_file" ] || return 1
 
 	case "$log_file" in
-		/*) ;;
+		"$LOG_DIR"/*) ;;
 		*)
-			log_error "log_file must be an absolute path"
+			log_error "log_file must be under $LOG_DIR"
 			return 1
 			;;
 	esac
+
+	base="${log_file#$LOG_DIR/}"
+	case "$base" in
+		''|*/*|*..*|*[!A-Za-z0-9._-]*)
+			log_error "log_file has an invalid file name: $log_file"
+			return 1
+			;;
+	esac
+
+	if [ -L "$log_file" ]; then
+		log_error "log_file must not be a symlink: $log_file"
+		return 1
+	fi
 
 	is_uint "$log_max_size_kb" && [ "$log_max_size_kb" -ge 64 ] && [ "$log_max_size_kb" -le 16384 ] || {
 		log_error "invalid log_max_size_kb: $log_max_size_kb"
@@ -536,7 +551,7 @@ start_service() {
 	config_get log_file "$SECTION" log_file "$DEFAULT_LOG_FILE"
 
 	if [ -n "$log_file" ]; then
-		mkdir -p "$(dirname "$log_file")"
+		mkdir -p "$LOG_DIR"
 		rotate_log || true
 	fi
 
