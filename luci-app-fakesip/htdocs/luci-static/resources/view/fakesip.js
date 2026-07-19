@@ -15,6 +15,7 @@ var callServiceList = rpc.declare({
 });
 
 var CRON_BEGIN = '# BEGIN fakesip scheduled restart';
+var initActionPending = false;
 
 function escapeHTML(value) {
 	return String(value == null ? '' : value)
@@ -268,11 +269,24 @@ function renderActionGroup(actions, footer) {
 			'type': 'button',
 			'title': action.title,
 			'click': function(ev) {
+				var button = ev.currentTarget;
+
 				ev.preventDefault();
 				ev.stopPropagation();
-				if (action.disabled)
+				if (action.disabled || initActionPending)
 					return false;
-				return runInitAction(action.action, action.success);
+				initActionPending = true;
+				button.disabled = true;
+
+				return runInitAction(action.action, action.success).then(function(res) {
+					initActionPending = false;
+					button.disabled = false;
+					return res;
+				}, function(err) {
+					initActionPending = false;
+					button.disabled = false;
+					throw err;
+				});
 			}
 		};
 
