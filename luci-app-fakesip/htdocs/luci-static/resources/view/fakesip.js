@@ -348,7 +348,7 @@ return view.extend({
 		o.renderWidget = function() {
 			return renderActionGroup([
 				{ title: '更新定时任务', style: 'apply', action: 'update_cron', success: '定时任务已更新', label: '更新', disabled: !serviceEnabled },
-				{ title: '清理残留规则', style: 'remove', action: 'cleanup_rules', success: '残留规则清理完成', label: '清理', disabled: !serviceEnabled }
+				{ title: '清理残留规则', style: 'remove', action: 'cleanup_rules', success: '残留规则清理完成', label: '清理', disabled: !serviceEnabled || serviceStatus.running }
 			], '定时重启：' + getScheduleText(crontab));
 		};
 
