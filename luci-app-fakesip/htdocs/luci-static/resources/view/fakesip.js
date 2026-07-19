@@ -227,16 +227,12 @@ function renderActionGroup(actions, footer) {
 
 return view.extend({
 	load: function() {
-		var logFile;
-
 		return uci.load('fakesip').then(function() {
-			logFile = uci.get('fakesip', 'main', 'log_file') || '/var/log/fakesip/fakesip.log';
-
 			return Promise.all([
 				L.resolveDefault(callServiceList('fakesip'), {}),
 				L.resolveDefault(fs.read('/etc/crontabs/root'), ''),
-				L.resolveDefault(fs.exec('/sbin/logread', [ '-e', 'fakesip' ]), { stdout: '' }),
-				L.resolveDefault(fs.read(logFile), '')
+				L.resolveDefault(fs.exec('/usr/libexec/fakesip-logread', [ 'system', '200' ]), { stdout: '' }),
+				L.resolveDefault(fs.exec('/usr/libexec/fakesip-logread', [ 'file', '200' ]), { stdout: '' })
 			]);
 		});
 	},
@@ -247,7 +243,8 @@ return view.extend({
 		var serviceStatus = getServiceStatus(services);
 		var crontab = data[1] || '';
 		var logOutput = data[2] && data[2].stdout ? data[2].stdout : '';
-		var fileLog = data[3] || '';
+		var fileLog = data[3] && data[3].stdout ? data[3].stdout : '';
+		var fileLogPath = uci.get('fakesip', 'main', 'log_file') || '/var/log/fakesip/fakesip.log';
 		var m, s, o, p, enabledOpt, ifaceModeOpt, noHop, payloadTypeOpt;
 
 		m = new form.Map('fakesip', 'FakeSIP');
@@ -389,6 +386,18 @@ return view.extend({
 			return true;
 		};
 
+		o = s.taboption('advanced', form.Value, 'log_max_size_kb', '日志轮转大小（KB）');
+		o.default = '512';
+		o.placeholder = '512';
+		o.rmempty = false;
+		o.validate = validateRange(64, 16384, '日志轮转大小范围为 64 到 16384 KB', false);
+
+		o = s.taboption('advanced', form.Value, 'log_rotate_count', '日志保留份数');
+		o.default = '3';
+		o.placeholder = '3';
+		o.rmempty = false;
+		o.validate = validateRange(1, 10, '日志保留份数范围为 1 到 10', false);
+
 		o = s.taboption('schedule', form.Flag, 'scheduled_restart', '启用定时重启');
 		o.rmempty = false;
 
@@ -435,7 +444,7 @@ return view.extend({
 		o.rawhtml = true;
 		o.cfgvalue = function() {
 			return renderLogBlock('系统日志', logOutput, 200) +
-				renderLogBlock('文件日志 /var/log/fakesip/fakesip.log', fileLog, 200);
+				renderLogBlock('文件日志 ' + fileLogPath, fileLog, 200);
 		};
 
 		p = m.section(form.GridSection, 'payload', '负载选项');

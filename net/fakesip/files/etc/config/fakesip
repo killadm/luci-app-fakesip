@@ -18,6 +18,8 @@ config fakesip 'main'
 	option use_iptables '0'
 	option silent '0'
 	option log_file '/var/log/fakesip/fakesip.log'
+	option log_max_size_kb '512'
+	option log_rotate_count '3'
 
 	option scheduled_restart '0'
 	option restart_mode 'daily'

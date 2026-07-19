@@ -1,0 +1,79 @@
+#!/bin/sh
+
+NAME="fakesip"
+CONFIG="fakesip"
+SECTION="main"
+DEFAULT_LOG_FILE="/var/log/fakesip/fakesip.log"
+DEFAULT_LINES="200"
+MAX_LINES="1000"
+MAX_BYTES="262144"
+
+. /lib/functions.sh
+
+is_uint() {
+	case "$1" in
+		''|*[!0-9]*) return 1 ;;
+	esac
+	return 0
+}
+
+sanitize_lines() {
+	local lines="$1"
+
+	is_uint "$lines" || lines="$DEFAULT_LINES"
+	[ "$lines" -ge 1 ] || lines="$DEFAULT_LINES"
+	[ "$lines" -le "$MAX_LINES" ] || lines="$MAX_LINES"
+
+	echo "$lines"
+}
+
+get_log_file() {
+	local log_file
+
+	config_load "$CONFIG"
+	config_get log_file "$SECTION" log_file "$DEFAULT_LOG_FILE"
+
+	[ -n "$log_file" ] || return 1
+	case "$log_file" in
+		/*) ;;
+		*) return 1 ;;
+	esac
+
+	echo "$log_file"
+}
+
+read_file_log() {
+	local lines="$1"
+	local log_file
+
+	log_file="$(get_log_file)" || {
+		echo "文件日志未启用或路径无效"
+		return 0
+	}
+
+	[ -f "$log_file" ] || {
+		echo "日志文件不存在：$log_file"
+		return 0
+	}
+
+	tail -c "$MAX_BYTES" "$log_file" 2>/dev/null | tail -n "$lines"
+}
+
+read_system_log() {
+	local lines="$1"
+
+	/sbin/logread -e "$NAME" 2>/dev/null | tail -n "$lines"
+}
+
+case "$1" in
+	file)
+		read_file_log "$(sanitize_lines "$2")"
+		;;
+	system)
+		read_system_log "$(sanitize_lines "$2")"
+		;;
+	*)
+		echo "Usage: $0 {file|system} [lines]" >&2
+		exit 1
+		;;
+esac

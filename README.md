@@ -15,7 +15,8 @@
 - 默认使用 nftables，兼容 iptables
 - 支持 NFQUEUE、fwmark、TTL、重复包、动态 TTL
 - 支持每天、每周、按小时定时重启
-- LuCI 页面提供状态查看、启动、停止、重启、清理残留规则和日志查看
+- 支持文件日志按大小自动轮转，LuCI 只读取最近日志片段，避免大日志拖慢页面
+- LuCI 页面提供状态查看、启动、停止、重启、更新定时任务、清理残留规则和最近日志查看
 
 ## 目标环境
 
@@ -124,6 +125,9 @@ opkg install fakesip_*.ipk luci-app-fakesip_*.ipk
 - `dynamic_pct`：动态 TTL 百分比
 - `skip_firewall`：跳过防火墙规则
 - `use_iptables`：使用 iptables 兼容模式
+- `log_file`：FakeSIP 文件日志，默认 `/var/log/fakesip/fakesip.log`
+- `log_max_size_kb`：单个文件日志达到该大小后轮转，默认 `512` KB
+- `log_rotate_count`：保留的轮转日志份数，默认 `3`
 - `scheduled_restart`：启用定时重启
 
 服务管理：
@@ -133,6 +137,7 @@ opkg install fakesip_*.ipk luci-app-fakesip_*.ipk
 /etc/init.d/fakesip stop
 /etc/init.d/fakesip restart
 /etc/init.d/fakesip update_cron
+/etc/init.d/fakesip rotate_log
 /etc/init.d/fakesip cleanup_rules
 ```
 

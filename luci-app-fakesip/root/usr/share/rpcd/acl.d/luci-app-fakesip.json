@@ -8,8 +8,7 @@
 			},
 			"file": {
 				"/etc/crontabs/root": [ "read" ],
-				"/var/log/fakesip/fakesip.log": [ "read" ],
-				"/sbin/logread": [ "exec" ]
+				"/usr/libexec/fakesip-logread": [ "exec" ]
 			}
 		},
 		"write": {

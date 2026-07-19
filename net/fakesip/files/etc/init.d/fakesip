@@ -11,16 +11,22 @@ SECTION="main"
 CRON_FILE="/etc/crontabs/root"
 CRON_BEGIN="# BEGIN fakesip scheduled restart"
 CRON_END="# END fakesip scheduled restart"
+LOG_CRON_BEGIN="# BEGIN fakesip log rotate"
+LOG_CRON_END="# END fakesip log rotate"
 SCHEDULE_HELPER="/usr/libexec/fakesip-scheduled-restart"
 RUN_DIR="/var/run/fakesip"
 STAMP_FILE="$RUN_DIR/restart.stamp"
+DEFAULT_LOG_FILE="/var/log/fakesip/fakesip.log"
+DEFAULT_LOG_MAX_SIZE_KB="512"
+DEFAULT_LOG_ROTATE_COUNT="3"
 
-EXTRA_COMMANDS="start_now stop_now restart_now update_cron clear_cron cleanup_rules"
+EXTRA_COMMANDS="start_now stop_now restart_now update_cron clear_cron rotate_log cleanup_rules"
 EXTRA_HELP="	start_now	Start FakeSIP once without changing UCI enabled
 	stop_now	Stop FakeSIP and ignore missing procd service
 	restart_now	Restart FakeSIP once without changing UCI enabled
-	update_cron	Rebuild FakeSIP scheduled restart task
-	clear_cron	Remove FakeSIP scheduled restart task
+	update_cron	Rebuild FakeSIP cron tasks
+	clear_cron	Remove FakeSIP cron tasks
+	rotate_log	Rotate FakeSIP file log if it exceeds configured size
 	cleanup_rules	Remove stale FakeSIP firewall rules"
 
 . /lib/functions.sh
@@ -66,12 +72,14 @@ cron_reload() {
 	/etc/init.d/cron reload >/dev/null 2>&1 || /etc/init.d/cron restart >/dev/null 2>&1 || true
 }
 
-remove_cron_block() {
+remove_cron_block_by_marker() {
+	local begin="$1"
+	local end="$2"
 	local tmp
 
 	[ -f "$CRON_FILE" ] || return 0
 	tmp="$(mktemp)"
-	awk -v begin="$CRON_BEGIN" -v end="$CRON_END" '
+	awk -v begin="$begin" -v end="$end" '
 		$0 == begin { skip = 1; next }
 		$0 == end { skip = 0; next }
 		!skip { print }
@@ -80,8 +88,17 @@ remove_cron_block() {
 	rm -f "$tmp"
 }
 
+remove_cron_block() {
+	remove_cron_block_by_marker "$CRON_BEGIN" "$CRON_END"
+}
+
+remove_log_cron_block() {
+	remove_cron_block_by_marker "$LOG_CRON_BEGIN" "$LOG_CRON_END"
+}
+
 clear_cron() {
 	remove_cron_block
+	remove_log_cron_block
 	cron_reload
 }
 
@@ -90,9 +107,52 @@ update_interval_stamp() {
 	date +%s > "$STAMP_FILE"
 }
 
+append_cron_block() {
+	local begin="$1"
+	local line="$2"
+	local end="$3"
+
+	[ -n "$line" ] || return 0
+
+	{
+		echo "$begin"
+		echo "$line"
+		echo "$end"
+	} >> "$CRON_FILE"
+}
+
+validate_log_rotation_config() {
+	local log_file="$1"
+	local log_max_size_kb="$2"
+	local log_rotate_count="$3"
+
+	[ -n "$log_file" ] || return 1
+
+	case "$log_file" in
+		/*) ;;
+		*)
+			log_error "log_file must be an absolute path"
+			return 1
+			;;
+	esac
+
+	is_uint "$log_max_size_kb" && [ "$log_max_size_kb" -ge 64 ] && [ "$log_max_size_kb" -le 16384 ] || {
+		log_error "invalid log_max_size_kb: $log_max_size_kb"
+		return 1
+	}
+
+	is_uint "$log_rotate_count" && [ "$log_rotate_count" -ge 1 ] && [ "$log_rotate_count" -le 10 ] || {
+		log_error "invalid log_rotate_count: $log_rotate_count"
+		return 1
+	}
+
+	return 0
+}
+
 update_cron() {
 	local enabled scheduled_restart restart_mode restart_time restart_weekday restart_interval_hours
-	local hour minute cron_line
+	local log_file log_max_size_kb log_rotate_count
+	local hour minute cron_line log_cron_line
 
 	config_load "$CONFIG"
 	config_get_bool enabled "$SECTION" enabled 0
@@ -101,61 +161,132 @@ update_cron() {
 	config_get restart_time "$SECTION" restart_time "04:00"
 	config_get restart_weekday "$SECTION" restart_weekday "0"
 	config_get restart_interval_hours "$SECTION" restart_interval_hours "24"
+	config_get log_file "$SECTION" log_file "$DEFAULT_LOG_FILE"
+	config_get log_max_size_kb "$SECTION" log_max_size_kb "$DEFAULT_LOG_MAX_SIZE_KB"
+	config_get log_rotate_count "$SECTION" log_rotate_count "$DEFAULT_LOG_ROTATE_COUNT"
 
 	mkdir -p "$(dirname "$CRON_FILE")"
 	touch "$CRON_FILE"
 	remove_cron_block
+	remove_log_cron_block
 
-	if [ "$enabled" -ne 1 ] || [ "$scheduled_restart" -ne 1 ]; then
+	if [ "$enabled" -ne 1 ]; then
 		cron_reload
 		return 0
 	fi
 
-	case "$restart_mode" in
-		daily|weekly)
-			if ! is_time "$restart_time"; then
-				log_error "invalid restart_time: $restart_time"
-				cron_reload
-				return 1
-			fi
+	if [ "$scheduled_restart" -eq 1 ]; then
+		case "$restart_mode" in
+			daily|weekly)
+				if ! is_time "$restart_time"; then
+					log_error "invalid restart_time: $restart_time"
+					cron_reload
+					return 1
+				fi
 
-			hour="${restart_time%:*}"
-			minute="${restart_time#*:}"
+				hour="${restart_time%:*}"
+				minute="${restart_time#*:}"
 
-			if [ "$restart_mode" = "daily" ]; then
-				cron_line="$minute $hour * * * $SCHEDULE_HELPER daily >/dev/null 2>&1"
-			else
-				is_uint "$restart_weekday" && [ "$restart_weekday" -ge 0 ] && [ "$restart_weekday" -le 6 ] || {
-					log_error "invalid restart_weekday: $restart_weekday"
+				if [ "$restart_mode" = "daily" ]; then
+					cron_line="$minute $hour * * * $SCHEDULE_HELPER daily >/dev/null 2>&1"
+				else
+					is_uint "$restart_weekday" && [ "$restart_weekday" -ge 0 ] && [ "$restart_weekday" -le 6 ] || {
+						log_error "invalid restart_weekday: $restart_weekday"
+						cron_reload
+						return 1
+					}
+					cron_line="$minute $hour * * $restart_weekday $SCHEDULE_HELPER weekly >/dev/null 2>&1"
+				fi
+				;;
+			interval)
+				is_uint "$restart_interval_hours" && [ "$restart_interval_hours" -ge 1 ] && [ "$restart_interval_hours" -le 168 ] || {
+					log_error "invalid restart_interval_hours: $restart_interval_hours"
 					cron_reload
 					return 1
 				}
-				cron_line="$minute $hour * * $restart_weekday $SCHEDULE_HELPER weekly >/dev/null 2>&1"
-			fi
-			;;
-		interval)
-			is_uint "$restart_interval_hours" && [ "$restart_interval_hours" -ge 1 ] && [ "$restart_interval_hours" -le 168 ] || {
-				log_error "invalid restart_interval_hours: $restart_interval_hours"
+				update_interval_stamp
+				cron_line="0 * * * * $SCHEDULE_HELPER interval >/dev/null 2>&1"
+				;;
+			*)
+				log_error "invalid restart_mode: $restart_mode"
 				cron_reload
 				return 1
-			}
-			update_interval_stamp
-			cron_line="0 * * * * $SCHEDULE_HELPER interval >/dev/null 2>&1"
-			;;
-		*)
-			log_error "invalid restart_mode: $restart_mode"
+				;;
+		esac
+	fi
+
+	if [ -n "$log_file" ]; then
+		validate_log_rotation_config "$log_file" "$log_max_size_kb" "$log_rotate_count" || {
 			cron_reload
 			return 1
-			;;
-	esac
+		}
+		log_cron_line="*/10 * * * * /etc/init.d/fakesip rotate_log >/dev/null 2>&1"
+	fi
 
-	{
-		echo "$CRON_BEGIN"
-		echo "$cron_line"
-		echo "$CRON_END"
-	} >> "$CRON_FILE"
+	append_cron_block "$CRON_BEGIN" "$cron_line" "$CRON_END"
+	append_cron_block "$LOG_CRON_BEGIN" "$log_cron_line" "$LOG_CRON_END"
 
 	cron_reload
+}
+
+get_file_size() {
+	stat -c %s "$1" 2>/dev/null || wc -c < "$1" 2>/dev/null || echo 0
+}
+
+rotate_log() {
+	local log_file log_max_size_kb log_rotate_count
+	local max_bytes size dir lock_dir tmp i next
+
+	config_load "$CONFIG"
+	config_get log_file "$SECTION" log_file "$DEFAULT_LOG_FILE"
+	config_get log_max_size_kb "$SECTION" log_max_size_kb "$DEFAULT_LOG_MAX_SIZE_KB"
+	config_get log_rotate_count "$SECTION" log_rotate_count "$DEFAULT_LOG_ROTATE_COUNT"
+
+	[ -n "$log_file" ] || return 0
+	validate_log_rotation_config "$log_file" "$log_max_size_kb" "$log_rotate_count" || return 1
+
+	[ -f "$log_file" ] || return 0
+
+	max_bytes=$((log_max_size_kb * 1024))
+	size="$(get_file_size "$log_file")"
+	is_uint "$size" || size=0
+	[ "$size" -gt "$max_bytes" ] || return 0
+
+	dir="$(dirname "$log_file")"
+	mkdir -p "$dir" "$RUN_DIR"
+
+	lock_dir="$RUN_DIR/logrotate.lock"
+	mkdir "$lock_dir" 2>/dev/null || return 0
+	trap 'rmdir "$lock_dir" 2>/dev/null' EXIT INT TERM
+
+	tmp="$(mktemp "$dir/.fakesip-log.XXXXXX")" || {
+		rmdir "$lock_dir" 2>/dev/null
+		trap - EXIT INT TERM
+		return 1
+	}
+
+	if ! tail -c "$max_bytes" "$log_file" > "$tmp"; then
+		rm -f "$tmp"
+		rmdir "$lock_dir" 2>/dev/null
+		trap - EXIT INT TERM
+		return 1
+	fi
+
+	rm -f "$log_file.$log_rotate_count"
+	i=$((log_rotate_count - 1))
+	while [ "$i" -ge 1 ]; do
+		next=$((i + 1))
+		[ -f "$log_file.$i" ] && mv -f "$log_file.$i" "$log_file.$next"
+		i=$((i - 1))
+	done
+
+	mv -f "$tmp" "$log_file.1"
+	: > "$log_file"
+	logger -t "$NAME" "rotated file log: $log_file (${size} bytes)"
+
+	rmdir "$lock_dir" 2>/dev/null
+	trap - EXIT INT TERM
+	return 0
 }
 
 append_arg() {
@@ -274,6 +405,7 @@ append_payload() {
 validate_start_config() {
 	local interface_mode interfaces direction ip_family queue_num repeat ttl
 	local dynamic_pct disable_hop_estimation log_file fwmark fwmask
+	local log_max_size_kb log_rotate_count
 
 	config_get interface_mode "$SECTION" interface_mode "custom"
 	config_get interfaces "$SECTION" interfaces
@@ -284,7 +416,9 @@ validate_start_config() {
 	config_get ttl "$SECTION" ttl "3"
 	config_get dynamic_pct "$SECTION" dynamic_pct
 	config_get_bool disable_hop_estimation "$SECTION" disable_hop_estimation 0
-	config_get log_file "$SECTION" log_file "/var/log/fakesip/fakesip.log"
+	config_get log_file "$SECTION" log_file "$DEFAULT_LOG_FILE"
+	config_get log_max_size_kb "$SECTION" log_max_size_kb "$DEFAULT_LOG_MAX_SIZE_KB"
+	config_get log_rotate_count "$SECTION" log_rotate_count "$DEFAULT_LOG_ROTATE_COUNT"
 	config_get fwmark "$SECTION" fwmark "0x10000"
 	config_get fwmask "$SECTION" fwmask
 
@@ -335,15 +469,7 @@ validate_start_config() {
 		fi
 	fi
 
-	if [ -n "$log_file" ]; then
-		case "$log_file" in
-			/*) ;;
-			*)
-				log_error "log_file must be an absolute path"
-				return 1
-				;;
-		esac
-	fi
+	[ -z "$log_file" ] || validate_log_rotation_config "$log_file" "$log_max_size_kb" "$log_rotate_count" || return 1
 
 	is_mark "$fwmark" || {
 		log_error "invalid fwmark: $fwmark"
@@ -407,9 +533,12 @@ start_service() {
 	config_get_bool skip_firewall "$SECTION" skip_firewall 0
 	config_get_bool use_iptables "$SECTION" use_iptables 0
 	config_get_bool silent "$SECTION" silent 0
-	config_get log_file "$SECTION" log_file "/var/log/fakesip/fakesip.log"
+	config_get log_file "$SECTION" log_file "$DEFAULT_LOG_FILE"
 
-	[ -n "$log_file" ] && mkdir -p "$(dirname "$log_file")"
+	if [ -n "$log_file" ]; then
+		mkdir -p "$(dirname "$log_file")"
+		rotate_log || true
+	fi
 
 	procd_open_instance "$NAME"
 	procd_set_param command "$PROG"
