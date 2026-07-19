@@ -296,6 +296,14 @@ clear_stale_log_lock() {
 	fi
 }
 
+release_log_lock() {
+	local lock_dir="$1"
+
+	rm -f "$lock_dir/pid"
+	rmdir "$lock_dir" 2>/dev/null
+	trap - EXIT INT TERM
+}
+
 rotate_log() {
 	local log_file log_max_size_kb log_rotate_count
 	local max_bytes size dir lock_dir tmp i next
@@ -324,20 +332,16 @@ rotate_log() {
 		mkdir "$lock_dir" 2>/dev/null || return 0
 	}
 	echo "$$" > "$lock_dir/pid"
-	trap 'rm -f "$lock_dir/pid"; rmdir "$lock_dir" 2>/dev/null' EXIT INT TERM
+	trap 'release_log_lock "$lock_dir"' EXIT INT TERM
 
 	tmp="$(mktemp "$dir/.fakesip-log.XXXXXX")" || {
-		rm -f "$lock_dir/pid"
-		rmdir "$lock_dir" 2>/dev/null
-		trap - EXIT INT TERM
+		release_log_lock "$lock_dir"
 		return 1
 	}
 
 	if ! tail -c "$max_bytes" "$log_file" > "$tmp"; then
 		rm -f "$tmp"
-		rm -f "$lock_dir/pid"
-		rmdir "$lock_dir" 2>/dev/null
-		trap - EXIT INT TERM
+		release_log_lock "$lock_dir"
 		return 1
 	fi
 
@@ -353,9 +357,7 @@ rotate_log() {
 	: > "$log_file"
 	logger -t "$NAME" "rotated file log: $log_file (${size} bytes)"
 
-	rm -f "$lock_dir/pid"
-	rmdir "$lock_dir" 2>/dev/null
-	trap - EXIT INT TERM
+	release_log_lock "$lock_dir"
 	return 0
 }
 
