@@ -257,6 +257,9 @@ function runInitAction(action, successText) {
 				resolve();
 			}, 900);
 		});
+	}).catch(function(err) {
+		ui.addNotification('操作失败', E('pre', { 'style': 'white-space:pre-wrap' },
+			String(err && (err.message || err) || 'RPC 调用失败')), 'danger');
 	});
 }
 
