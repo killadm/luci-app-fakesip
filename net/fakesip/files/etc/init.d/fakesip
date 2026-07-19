@@ -79,14 +79,20 @@ remove_cron_block_by_marker() {
 	local tmp
 
 	[ -f "$CRON_FILE" ] || return 0
-	tmp="$(mktemp)"
+	tmp="$(mktemp "$CRON_FILE.XXXXXX")" || return 1
 	awk -v begin="$begin" -v end="$end" '
 		$0 == begin { skip = 1; next }
 		$0 == end { skip = 0; next }
 		!skip { print }
-	' "$CRON_FILE" > "$tmp"
-	cat "$tmp" > "$CRON_FILE"
-	rm -f "$tmp"
+	' "$CRON_FILE" > "$tmp" || {
+		rm -f "$tmp"
+		return 1
+	}
+	chmod 600 "$tmp" 2>/dev/null || true
+	mv -f "$tmp" "$CRON_FILE" || {
+		rm -f "$tmp"
+		return 1
+	}
 }
 
 remove_cron_block() {
