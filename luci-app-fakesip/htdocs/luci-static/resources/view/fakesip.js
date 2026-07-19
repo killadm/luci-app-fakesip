@@ -86,11 +86,11 @@ function getScheduleText(crontab) {
 }
 
 function renderRuntimeStatus(enabled, status) {
-	if (!enabled) {
+	if (!enabled && !status.running) {
 		return '' +
 			'<div class="cbi-value-field">' +
 				'<span class="label warning">未启用</span>' +
-				'<span style="margin-left:1em">启用后可使用操作按钮</span>' +
+				'<span style="margin-left:1em">服务当前未运行</span>' +
 			'</div>';
 	}
 
@@ -98,8 +98,8 @@ function renderRuntimeStatus(enabled, status) {
 	var ifaceMode = uci.get('fakesip', 'main', 'interface_mode') || 'custom';
 	var ifaces = uci.get('fakesip', 'main', 'interfaces') || [];
 	var ifaceText = ifaceMode === 'all' ? '全部接口' : (Array.isArray(ifaces) ? ifaces.join(', ') : ifaces);
-	var label = status.running ? '运行中' : '已停止';
-	var labelClass = status.running ? 'label success' : 'label';
+	var label = status.running ? (enabled ? '运行中' : '运行中（未启用）') : '已停止';
+	var labelClass = status.running ? (enabled ? 'label success' : 'label warning') : 'label';
 	var pidText = status.pids.length ? 'PID：' + status.pids.join(', ') : 'PID：-';
 
 	return '' +
@@ -338,9 +338,9 @@ return view.extend({
 		o = s.taboption('status', form.DummyValue, '_service_actions', '服务控制');
 		o.renderWidget = function() {
 			return renderActionGroup([
-				{ title: '启动服务', style: 'apply', action: 'start_now', success: 'FakeSIP 已启动', label: '启动', disabled: !serviceEnabled || serviceStatus.running },
-				{ title: '停止服务', style: 'reset', action: 'stop_now', success: 'FakeSIP 已停止', label: '停止', disabled: !serviceEnabled || !serviceStatus.running },
-				{ title: '重启服务', style: 'reload', action: 'restart_now', success: 'FakeSIP 已重启', label: '重启', disabled: !serviceEnabled || !serviceStatus.running }
+				{ title: '启动服务', style: 'apply', action: 'start_now', success: 'FakeSIP 已启动', label: '启动', disabled: serviceStatus.running },
+				{ title: '停止服务', style: 'reset', action: 'stop_now', success: 'FakeSIP 已停止', label: '停止', disabled: !serviceStatus.running },
+				{ title: '重启服务', style: 'reload', action: 'restart_now', success: 'FakeSIP 已重启', label: '重启', disabled: !serviceStatus.running }
 			]);
 		};
 
