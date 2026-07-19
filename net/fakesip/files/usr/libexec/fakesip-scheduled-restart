@@ -24,8 +24,15 @@ load_settings() {
 }
 
 restart_fakesip() {
+	local output rc
+
 	logger -t "$NAME" "executing scheduled restart ($1)"
-	/etc/init.d/fakesip restart >/dev/null 2>&1
+	output="$(/etc/init.d/fakesip restart 2>&1)" && return 0
+
+	rc="$?"
+	logger -t "$NAME" "ERROR: scheduled restart failed ($1), exit code $rc"
+	[ -n "$output" ] && printf '%s\n' "$output" | logger -t "$NAME"
+	return "$rc"
 }
 
 run_interval() {
@@ -48,7 +55,7 @@ run_interval() {
 
 	[ "$elapsed" -ge "$interval" ] || exit 0
 
-	restart_fakesip "interval"
+	restart_fakesip "interval" || exit "$?"
 	date +%s > "$STAMP_FILE"
 }
 
@@ -70,7 +77,7 @@ case "$requested_mode" in
 		run_interval
 		;;
 	daily|weekly)
-		restart_fakesip "$requested_mode"
+		restart_fakesip "$requested_mode" || exit "$?"
 		;;
 esac
 
