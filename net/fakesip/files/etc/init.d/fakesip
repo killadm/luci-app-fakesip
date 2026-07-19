@@ -477,10 +477,11 @@ validate_payload() {
 }
 
 validate_payloads() {
-	local sections section invalid=0
+	local section section_type invalid=0
 
-	sections="$(uci -q show "$CONFIG" | sed -n "s/^$CONFIG\\.\\([^=]*\\)=payload$/\\1/p")"
-	for section in $sections; do
+	for section in $CONFIG_SECTIONS; do
+		config_get section_type "$section" TYPE
+		[ "$section_type" = "payload" ] || continue
 		validate_payload "$section" || invalid=1
 	done
 
