@@ -541,8 +541,10 @@ return view.extend({
 			}
 
 			if (type === 'custom') {
-				if (!value)
+				if (!value && enabledOpt.formvalue('main') === '1')
 					return '请填写自定义文件路径';
+				if (!value)
+					return true;
 
 				if (value.charAt(0) !== '/')
 					return '请输入绝对路径';
