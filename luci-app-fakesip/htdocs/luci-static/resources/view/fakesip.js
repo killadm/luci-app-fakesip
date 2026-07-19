@@ -120,12 +120,68 @@ function tailText(text, count) {
 	return lines.join('\n') || '暂无 FakeSIP 日志';
 }
 
-function renderLogBlock(title, text, count) {
+function renderLogPanel(text, count) {
+	return E('pre', {
+		'style': 'width:100%;box-sizing:border-box;max-height:32em;overflow:auto;white-space:pre-wrap'
+	}, [ tailText(text, count) ]);
+}
+
+function renderLogTabs(systemLog, fileLog) {
+	var systemPanel = E('div', { 'style': 'display:none;width:100%;box-sizing:border-box' }, [
+		renderLogPanel(systemLog, 200)
+	]);
+	var filePanel = E('div', { 'style': 'display:block;width:100%;box-sizing:border-box' }, [
+		renderLogPanel(fileLog, 200)
+	]);
+	var systemTab, fileTab;
+
+	function setActive(type) {
+		var showFile = type === 'file';
+
+		filePanel.style.display = showFile ? 'block' : 'none';
+		systemPanel.style.display = showFile ? 'none' : 'block';
+		fileTab.className = showFile ? 'cbi-tab' : 'cbi-tab-disabled';
+		systemTab.className = showFile ? 'cbi-tab-disabled' : 'cbi-tab';
+		fileTab.setAttribute('aria-selected', showFile ? 'true' : 'false');
+		systemTab.setAttribute('aria-selected', showFile ? 'false' : 'true');
+	}
+
+	fileTab = E('li', {
+		'class': 'cbi-tab',
+		'role': 'tab',
+		'aria-selected': 'true'
+	}, [
+		E('a', {
+			'href': '#',
+			'click': function(ev) {
+				ev.preventDefault();
+				setActive('file');
+			}
+		}, [ '文件日志' ])
+	]);
+
+	systemTab = E('li', {
+		'class': 'cbi-tab-disabled',
+		'role': 'tab',
+		'aria-selected': 'false'
+	}, [
+		E('a', {
+			'href': '#',
+			'click': function(ev) {
+				ev.preventDefault();
+				setActive('system');
+			}
+		}, [ '系统日志' ])
+	]);
+
 	return E('div', { 'style': 'width:100%;box-sizing:border-box' }, [
-		E('h3', {}, title),
-		E('pre', {
-			'style': 'width:100%;box-sizing:border-box;max-height:32em;overflow:auto;white-space:pre-wrap'
-		}, [ tailText(text, count) ])
+		E('ul', {
+			'class': 'cbi-tabmenu',
+			'role': 'tablist',
+			'style': 'margin-bottom:.75em'
+		}, [ fileTab, systemTab ]),
+		filePanel,
+		systemPanel
 	]);
 }
 
@@ -246,7 +302,6 @@ return view.extend({
 		var crontab = data[1] || '';
 		var logOutput = data[2] && data[2].stdout ? data[2].stdout : '';
 		var fileLog = data[3] && data[3].stdout ? data[3].stdout : '';
-		var fileLogPath = uci.get('fakesip', 'main', 'log_file') || '/var/log/fakesip/fakesip.log';
 		var m, s, o, p, enabledOpt, ifaceModeOpt, noHop, payloadTypeOpt;
 
 		m = new form.Map('fakesip', 'FakeSIP');
@@ -371,9 +426,6 @@ return view.extend({
 		o = s.taboption('advanced', form.Flag, 'use_iptables', '使用 iptables 兼容模式');
 		o.rmempty = false;
 
-		o = s.taboption('advanced', form.Flag, 'silent', '静默模式');
-		o.rmempty = false;
-
 		o = s.taboption('advanced', form.Value, 'log_file', '日志文件');
 		o.default = '/var/log/fakesip/fakesip.log';
 		o.placeholder = '/var/log/fakesip/fakesip.log';
@@ -442,6 +494,10 @@ return view.extend({
 			return '<div class="cbi-value-field">' + escapeHTML(getScheduleText(crontab)) + '</div>';
 		};
 
+		o = s.taboption('logs', form.Flag, 'silent', '静默模式');
+		o.rmempty = false;
+		o.description = '启用后仅保留错误等关键输出，减少连接处理明细日志；排查问题时建议关闭。';
+
 		o = s.taboption('logs', form.DummyValue, '_logs');
 		o.render = function() {
 			return E('div', { 'class': 'cbi-value', 'style': 'display:block' }, [
@@ -449,8 +505,7 @@ return view.extend({
 					'class': 'cbi-value-field',
 					'style': 'display:block;width:100%;margin-left:0'
 				}, [
-					renderLogBlock('系统日志', logOutput, 200),
-					renderLogBlock('文件日志 ' + fileLogPath, fileLog, 200)
+					renderLogTabs(logOutput, fileLog)
 				])
 			]);
 		};
