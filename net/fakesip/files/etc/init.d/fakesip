@@ -33,16 +33,10 @@ EXTRA_HELP="	start_now	Start FakeSIP once without changing UCI enabled
 
 . /lib/functions.sh
 . /lib/functions/network.sh
+. /usr/share/fakesip/functions.sh
 
 log_error() {
 	logger -t "$NAME" "ERROR: $*"
-}
-
-is_uint() {
-	case "$1" in
-		''|*[!0-9]*) return 1 ;;
-	esac
-	return 0
 }
 
 is_uint32() {

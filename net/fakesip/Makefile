@@ -53,6 +53,8 @@ define Package/fakesip/install
 	$(INSTALL_DIR) $(1)/usr/libexec
 	$(INSTALL_BIN) ./files/usr/libexec/fakesip-scheduled-restart $(1)/usr/libexec/fakesip-scheduled-restart
 	$(INSTALL_BIN) ./files/usr/libexec/fakesip-logread $(1)/usr/libexec/fakesip-logread
+	$(INSTALL_DIR) $(1)/usr/share/fakesip
+	$(INSTALL_DATA) ./files/usr/share/fakesip/functions.sh $(1)/usr/share/fakesip/functions.sh
 endef
 
 define Package/fakesip/postinst

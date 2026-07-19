@@ -1,19 +1,13 @@
 #!/bin/sh
 
 . /lib/functions.sh
+. /usr/share/fakesip/functions.sh
 
 NAME="fakesip"
 CONFIG="fakesip"
 SECTION="main"
 RUN_DIR="/var/run/fakesip"
 STAMP_FILE="$RUN_DIR/restart.stamp"
-
-is_uint() {
-	case "$1" in
-		''|*[!0-9]*) return 1 ;;
-	esac
-	return 0
-}
 
 load_settings() {
 	config_load "$CONFIG"

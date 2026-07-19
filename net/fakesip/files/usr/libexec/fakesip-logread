@@ -10,13 +10,7 @@ MAX_LINES="1000"
 MAX_BYTES="262144"
 
 . /lib/functions.sh
-
-is_uint() {
-	case "$1" in
-		''|*[!0-9]*) return 1 ;;
-	esac
-	return 0
-}
+. /usr/share/fakesip/functions.sh
 
 sanitize_lines() {
 	local lines="$1"
