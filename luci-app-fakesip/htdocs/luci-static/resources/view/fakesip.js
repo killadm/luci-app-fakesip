@@ -59,40 +59,6 @@ function getWeekdayText(value) {
 	})[value] || '周日';
 }
 
-function getDirectionText(value) {
-	return ({
-		'both': '双向',
-		'inbound': '入站',
-		'outbound': '出站'
-	})[value] || '双向';
-}
-
-function getIpFamilyText(value) {
-	return ({
-		'both': 'IPv4 + IPv6',
-		'ipv4': '仅 IPv4',
-		'ipv6': '仅 IPv6'
-	})[value] || 'IPv4 + IPv6';
-}
-
-function getPayloadSummary() {
-	var payloads = uci.sections('fakesip', 'payload') || [];
-	var sip = 0;
-	var custom = 0;
-
-	for (var i = 0; i < payloads.length; i++) {
-		if ((payloads[i].type || 'sip') === 'custom')
-			custom++;
-		else
-			sip++;
-	}
-
-	if (!payloads.length)
-		return '默认随机 SIP';
-
-	return 'SIP ' + sip + '，文件 ' + custom + '，共 ' + payloads.length + ' 条';
-}
-
 function getScheduleText(crontab) {
 	var enabled = uci.get('fakesip', 'main', 'scheduled_restart') === '1';
 	var serviceEnabled = uci.get('fakesip', 'main', 'enabled') === '1';
@@ -107,42 +73,41 @@ function getScheduleText(crontab) {
 		return '未启用';
 
 	if (!serviceEnabled)
-		return '服务未启用，定时任务不会生效';
+		return '服务未启用，计划任务不会生效';
 
 	if (mode === 'weekly')
-		text = '每周 ' + getWeekdayText(weekday) + ' ' + time;
+		text = '每' + getWeekdayText(weekday) + ' ' + time;
 	else if (mode === 'interval')
 		text = '每 ' + interval + ' 小时';
 	else
 		text = '每天 ' + time;
 
-	return text + (active ? '（已写入 cron）' : '（等待保存或应用）');
+	return text + (active ? '（已写入 cron）' : '（等待保存并应用）');
 }
 
-function renderRuntimeStatus(services, crontab) {
-	var status = getServiceStatus(services);
+function renderRuntimeStatus(enabled, status) {
+	if (!enabled) {
+		return '' +
+			'<div class="cbi-value-field">' +
+				'<span class="label warning">未启用</span>' +
+				'<span style="margin-left:1em">启用后可使用操作按钮</span>' +
+			'</div>';
+	}
+
 	var queue = uci.get('fakesip', 'main', 'queue_num') || '513';
 	var ifaceMode = uci.get('fakesip', 'main', 'interface_mode') || 'custom';
 	var ifaces = uci.get('fakesip', 'main', 'interfaces') || [];
-	var direction = getDirectionText(uci.get('fakesip', 'main', 'direction'));
-	var ipFamily = getIpFamilyText(uci.get('fakesip', 'main', 'ip_family'));
-	var payloadSummary = getPayloadSummary();
-	var logFile = uci.get('fakesip', 'main', 'log_file') || '/var/log/fakesip/fakesip.log';
 	var ifaceText = ifaceMode === 'all' ? '全部接口' : (Array.isArray(ifaces) ? ifaces.join(', ') : ifaces);
 	var label = status.running ? '运行中' : '已停止';
 	var labelClass = status.running ? 'label success' : 'label';
-	var pidText = status.pids.length ? 'PID: ' + status.pids.join(', ') : 'PID: -';
+	var pidText = status.pids.length ? 'PID：' + status.pids.join(', ') : 'PID：-';
 
 	return '' +
 		'<div class="cbi-value-field">' +
 			'<span class="' + labelClass + '">' + label + '</span>' +
 			'<span style="margin-left:1em">' + escapeHTML(pidText) + '</span>' +
-			'<span style="margin-left:1em">队列: ' + escapeHTML(queue) + '</span>' +
-			'<span style="margin-left:1em">接口: ' + escapeHTML(ifaceText || '-') + '</span>' +
-			'<div style="margin-top:.5em">方向: ' + escapeHTML(direction) + '，IP: ' + escapeHTML(ipFamily) + '</div>' +
-			'<div style="margin-top:.25em">载荷: ' + escapeHTML(payloadSummary) + '</div>' +
-			'<div style="margin-top:.25em">定时: ' + escapeHTML(getScheduleText(crontab)) + '</div>' +
-			'<div style="margin-top:.25em">日志: ' + escapeHTML(logFile) + '</div>' +
+			'<span style="margin-left:1em">队列：' + escapeHTML(queue) + '</span>' +
+			'<span style="margin-left:1em">接口：' + escapeHTML(ifaceText || '-') + '</span>' +
 		'</div>';
 }
 
@@ -226,21 +191,38 @@ function runInitAction(action, successText) {
 	});
 }
 
-function renderActionGroup(actions) {
-	return E('div', {
+function renderActionGroup(actions, footer) {
+	var buttons = E('div', {
 		'style': 'display:flex;gap:.5em;flex-wrap:wrap;align-items:center'
 	}, actions.map(function(action) {
-		return E('button', {
+		var props = {
 			'class': 'cbi-button cbi-button-' + action.style,
 			'type': 'button',
 			'title': action.title,
 			'click': function(ev) {
 				ev.preventDefault();
 				ev.stopPropagation();
+				if (action.disabled)
+					return false;
 				return runInitAction(action.action, action.success);
 			}
-		}, [ action.label || action.title ]);
+		};
+
+		if (action.disabled)
+			props.disabled = 'disabled';
+
+		return E('button', props, [ action.label || action.title ]);
 	}));
+
+	if (!footer)
+		return buttons;
+
+	return E('div', {}, [
+		buttons,
+		E('div', {
+			'style': 'margin-top:.5em'
+		}, [ footer ])
+	]);
 }
 
 return view.extend({
@@ -261,6 +243,8 @@ return view.extend({
 
 	render: function(data) {
 		var services = data[0];
+		var serviceEnabled = uci.get('fakesip', 'main', 'enabled') === '1';
+		var serviceStatus = getServiceStatus(services);
 		var crontab = data[1] || '';
 		var logOutput = data[2] && data[2].stdout ? data[2].stdout : '';
 		var fileLog = data[3] || '';
@@ -278,31 +262,31 @@ return view.extend({
 		s.tab('schedule', '定时重启');
 		s.tab('logs', '日志');
 
+		enabledOpt = s.taboption('status', form.Flag, 'enabled', '启用');
+		enabledOpt.rmempty = false;
+
 		o = s.taboption('status', form.DummyValue, '_runtime', '当前状态');
 		o.rawhtml = true;
 		o.cfgvalue = function() {
-			return renderRuntimeStatus(services, crontab);
+			return renderRuntimeStatus(serviceEnabled, serviceStatus);
 		};
 
 		o = s.taboption('status', form.DummyValue, '_service_actions', '服务控制');
 		o.renderWidget = function() {
 			return renderActionGroup([
-				{ title: '启动服务', style: 'apply', action: 'start_now', success: 'FakeSIP 已启动', label: '启动' },
-				{ title: '停止服务', style: 'reset', action: 'stop_now', success: 'FakeSIP 已停止', label: '停止' },
-				{ title: '重启服务', style: 'reload', action: 'restart_now', success: 'FakeSIP 已重启', label: '重启' }
+				{ title: '启动服务', style: 'apply', action: 'start_now', success: 'FakeSIP 已启动', label: '启动', disabled: !serviceEnabled || serviceStatus.running },
+				{ title: '停止服务', style: 'reset', action: 'stop_now', success: 'FakeSIP 已停止', label: '停止', disabled: !serviceEnabled || !serviceStatus.running },
+				{ title: '重启服务', style: 'reload', action: 'restart_now', success: 'FakeSIP 已重启', label: '重启', disabled: !serviceEnabled || !serviceStatus.running }
 			]);
 		};
 
 		o = s.taboption('status', form.DummyValue, '_maintenance_actions', '定时任务');
 		o.renderWidget = function() {
 			return renderActionGroup([
-				{ title: '更新定时任务', style: 'apply', action: 'update_cron', success: '定时任务已更新', label: '更新' },
-				{ title: '清理残留规则', style: 'remove', action: 'cleanup_rules', success: '残留规则清理完成', label: '清理' }
-			]);
+				{ title: '更新定时任务', style: 'apply', action: 'update_cron', success: '定时任务已更新', label: '更新', disabled: !serviceEnabled },
+				{ title: '清理残留规则', style: 'remove', action: 'cleanup_rules', success: '残留规则清理完成', label: '清理', disabled: !serviceEnabled }
+			], '定时重启：' + getScheduleText(crontab));
 		};
-
-		enabledOpt = s.taboption('basic', form.Flag, 'enabled', '启用');
-		enabledOpt.rmempty = false;
 
 		ifaceModeOpt = s.taboption('basic', form.ListValue, 'interface_mode', '接口范围');
 		ifaceModeOpt.value('custom', '指定接口');
@@ -320,7 +304,7 @@ return view.extend({
 			if (enabledOpt.formvalue(sectionId) === '1' &&
 			    ifaceModeOpt.formvalue(sectionId) === 'custom' &&
 			    !selected)
-				return '启用后至少选择一个接口';
+				return '启用服务时至少选择一个接口';
 
 			return true;
 		};
@@ -454,11 +438,11 @@ return view.extend({
 				renderLogBlock('文件日志 /var/log/fakesip/fakesip.log', fileLog, 200);
 		};
 
-		p = m.section(form.GridSection, 'payload', '载荷');
+		p = m.section(form.GridSection, 'payload', '负载选项');
 		p.anonymous = true;
 		p.addremove = true;
 		p.sortable = true;
-		p.nodescriptions = true;
+		p.addbtntitle = '添加负载';
 
 		payloadTypeOpt = p.option(form.ListValue, 'type', '类型');
 		payloadTypeOpt.value('sip', 'SIP URI');
