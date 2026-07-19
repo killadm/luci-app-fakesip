@@ -307,14 +307,22 @@ release_log_lock() {
 rotate_log() {
 	local log_file log_max_size_kb log_rotate_count
 	local max_bytes size dir lock_dir tmp i next
+	local log_validated=0
 
-	config_load "$CONFIG"
-	config_get log_file "$SECTION" log_file "$DEFAULT_LOG_FILE"
-	config_get log_max_size_kb "$SECTION" log_max_size_kb "$DEFAULT_LOG_MAX_SIZE_KB"
-	config_get log_rotate_count "$SECTION" log_rotate_count "$DEFAULT_LOG_ROTATE_COUNT"
+	if [ "$1" = "log_validated" ]; then
+		log_validated=1
+		log_file="$2"
+		log_max_size_kb="$3"
+		log_rotate_count="$4"
+	else
+		config_load "$CONFIG"
+		config_get log_file "$SECTION" log_file "$DEFAULT_LOG_FILE"
+		config_get log_max_size_kb "$SECTION" log_max_size_kb "$DEFAULT_LOG_MAX_SIZE_KB"
+		config_get log_rotate_count "$SECTION" log_rotate_count "$DEFAULT_LOG_ROTATE_COUNT"
+	fi
 
 	[ -n "$log_file" ] || return 0
-	validate_log_rotation_config "$log_file" "$log_max_size_kb" "$log_rotate_count" || return 1
+	[ "$log_validated" -eq 1 ] || validate_log_rotation_config "$log_file" "$log_max_size_kb" "$log_rotate_count" || return 1
 
 	[ -f "$log_file" ] || return 0
 
@@ -635,7 +643,7 @@ start_service() {
 
 	if [ -n "$log_file" ]; then
 		mkdir -p "$LOG_DIR"
-		rotate_log || true
+		rotate_log log_validated "$log_file" "$log_max_size_kb" "$log_rotate_count" || true
 	fi
 
 	procd_open_instance "$NAME"
