@@ -45,6 +45,10 @@ is_uint() {
 	return 0
 }
 
+is_uint32() {
+	is_uint "$1" && [ "$1" -ge 0 ] && [ "$1" -le 4294967295 ]
+}
+
 is_time() {
 	local hour minute
 
@@ -64,10 +68,32 @@ is_time() {
 }
 
 is_mark() {
-	case "$1" in
-		0x[0-9a-fA-F]|0x[0-9a-fA-F][0-9a-fA-F]*|[1-9][0-9]*) return 0 ;;
-		*) return 1 ;;
+	local value="$1"
+	local hex
+
+	case "$value" in
+		'')
+			return 1
+			;;
+		0x*)
+			hex="${value#0x}"
+			;;
+		0X*)
+			hex="${value#0X}"
+			;;
+		*)
+			is_uint32 "$value"
+			return "$?"
+			;;
 	esac
+
+	case "$hex" in
+		''|*[!0-9a-fA-F]*)
+			return 1
+			;;
+	esac
+
+	[ "${#hex}" -le 8 ]
 }
 
 cron_reload() {
@@ -525,21 +551,11 @@ validate_start_config() {
 		return 1
 	}
 
-	if [ $((fwmark)) -gt 4294967295 ]; then
-		log_error "invalid fwmark: $fwmark"
-		return 1
-	fi
-
 	if [ -n "$fwmask" ]; then
 		is_mark "$fwmask" || {
 			log_error "invalid fwmask: $fwmask"
 			return 1
 		}
-
-		if [ $((fwmask)) -gt 4294967295 ]; then
-			log_error "invalid fwmask: $fwmask"
-			return 1
-		fi
 
 		if [ $((fwmark & fwmask)) -ne "$fwmark" ]; then
 			log_error "invalid fwmark/fwmask combination"

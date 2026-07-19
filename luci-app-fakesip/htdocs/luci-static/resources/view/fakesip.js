@@ -213,12 +213,12 @@ function validateTime(sectionId, value) {
 function validateMark(sectionId, value) {
 	var n;
 
-	if (!/^(0x[0-9a-fA-F]+|[1-9][0-9]*)$/.test(value || ''))
-		return '请输入非零十进制或十六进制数，例如 0x10000';
+	if (!/^(0x[0-9a-fA-F]+|0|[1-9][0-9]*)$/.test(value || ''))
+		return '请输入十进制数或十六进制数，例如 0x10000';
 
 	n = Number(value);
-	if (!isFinite(n) || n < 1 || n > 0xffffffff)
-		return '数值范围为 1 到 4294967295';
+	if (!isFinite(n) || n < 0 || n > 0xffffffff)
+		return '数值范围为 0 到 4294967295';
 
 	return true;
 }
