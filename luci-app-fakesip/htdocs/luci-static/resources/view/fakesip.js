@@ -226,6 +226,23 @@ function runInitAction(action, successText) {
 	});
 }
 
+function renderActionGroup(actions) {
+	return E('div', {
+		'style': 'display:flex;gap:.5em;flex-wrap:wrap;align-items:center'
+	}, actions.map(function(action) {
+		return E('button', {
+			'class': 'cbi-button cbi-button-' + action.style,
+			'type': 'button',
+			'title': action.title,
+			'click': function(ev) {
+				ev.preventDefault();
+				ev.stopPropagation();
+				return runInitAction(action.action, action.success);
+			}
+		}, [ action.label || action.title ]);
+	}));
+}
+
 return view.extend({
 	load: function() {
 		var logFile;
@@ -255,10 +272,10 @@ return view.extend({
 		s.anonymous = true;
 		s.addremove = false;
 
-		s.tab('status', '状态');
-		s.tab('basic', '基础');
-		s.tab('advanced', '高级');
-		s.tab('schedule', '定时');
+		s.tab('status', '状态与操作');
+		s.tab('basic', '基础设置');
+		s.tab('advanced', '高级设置');
+		s.tab('schedule', '定时重启');
 		s.tab('logs', '日志');
 
 		o = s.taboption('status', form.DummyValue, '_runtime', '当前状态');
@@ -267,39 +284,21 @@ return view.extend({
 			return renderRuntimeStatus(services, crontab);
 		};
 
-		o = s.taboption('status', form.Button, '_start', '启动服务');
-		o.inputtitle = '启动';
-		o.inputstyle = 'apply';
-		o.onclick = function() {
-			return runInitAction('start_now', 'FakeSIP 已启动');
+		o = s.taboption('status', form.DummyValue, '_service_actions', '服务控制');
+		o.renderWidget = function() {
+			return renderActionGroup([
+				{ title: '启动服务', style: 'apply', action: 'start_now', success: 'FakeSIP 已启动', label: '启动' },
+				{ title: '停止服务', style: 'reset', action: 'stop_now', success: 'FakeSIP 已停止', label: '停止' },
+				{ title: '重启服务', style: 'reload', action: 'restart_now', success: 'FakeSIP 已重启', label: '重启' }
+			]);
 		};
 
-		o = s.taboption('status', form.Button, '_stop', '停止服务');
-		o.inputtitle = '停止';
-		o.inputstyle = 'reset';
-		o.onclick = function() {
-			return runInitAction('stop_now', 'FakeSIP 已停止');
-		};
-
-		o = s.taboption('status', form.Button, '_restart', '重启服务');
-		o.inputtitle = '重启';
-		o.inputstyle = 'reload';
-		o.onclick = function() {
-			return runInitAction('restart_now', 'FakeSIP 已重启');
-		};
-
-		o = s.taboption('status', form.Button, '_update_cron', '刷新定时任务');
-		o.inputtitle = '刷新';
-		o.inputstyle = 'apply';
-		o.onclick = function() {
-			return runInitAction('update_cron', '定时任务已更新');
-		};
-
-		o = s.taboption('status', form.Button, '_cleanup', '清理残留规则');
-		o.inputtitle = '清理';
-		o.inputstyle = 'remove';
-		o.onclick = function() {
-			return runInitAction('cleanup_rules', '残留规则已清理');
+		o = s.taboption('status', form.DummyValue, '_maintenance_actions', '定时任务');
+		o.renderWidget = function() {
+			return renderActionGroup([
+				{ title: '更新定时任务', style: 'apply', action: 'update_cron', success: '定时任务已更新', label: '更新' },
+				{ title: '清理残留规则', style: 'remove', action: 'cleanup_rules', success: '残留规则清理完成', label: '清理' }
+			]);
 		};
 
 		enabledOpt = s.taboption('basic', form.Flag, 'enabled', '启用');
