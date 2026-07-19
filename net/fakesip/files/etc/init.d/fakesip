@@ -195,6 +195,7 @@ update_cron() {
 	local enabled scheduled_restart restart_mode restart_time restart_weekday restart_interval_hours
 	local log_file log_max_size_kb log_rotate_count
 	local hour minute cron_line log_cron_line
+	local skip_log_validation="$1"
 
 	config_load "$CONFIG"
 	config_get_bool enabled "$SECTION" enabled 0
@@ -258,7 +259,7 @@ update_cron() {
 	fi
 
 	if [ -n "$log_file" ]; then
-		if validate_log_rotation_config "$log_file" "$log_max_size_kb" "$log_rotate_count"; then
+		if [ "$skip_log_validation" = "log_validated" ] || validate_log_rotation_config "$log_file" "$log_max_size_kb" "$log_rotate_count"; then
 			log_cron_line="*/10 * * * * /etc/init.d/fakesip rotate_log >/dev/null 2>&1"
 		else
 			log_error "file log rotation cron skipped because log settings are invalid"
@@ -593,10 +594,12 @@ start_service() {
 	local log_max_size_kb log_rotate_count
 
 	config_load "$CONFIG"
-	update_cron || return 1
 
 	config_get_bool enabled "$SECTION" enabled 0
-	[ "$enabled" -eq 1 ] || [ "$START_NOW" = "1" ] || return 0
+	if [ "$enabled" -ne 1 ] && [ "$START_NOW" != "1" ]; then
+		update_cron || return 1
+		return 0
+	fi
 
 	[ -x "$PROG" ] || {
 		log_error "$PROG is not executable"
@@ -625,6 +628,8 @@ start_service() {
 		"$interface_mode" "$interfaces" "$direction" "$ip_family" "$queue_num" \
 		"$fwmark" "$fwmask" "$repeat" "$ttl" "$dynamic_pct" \
 		"$disable_hop_estimation" "$log_file" "$log_max_size_kb" "$log_rotate_count" || return 1
+
+	update_cron log_validated || return 1
 
 	if [ -n "$log_file" ]; then
 		mkdir -p "$LOG_DIR"
