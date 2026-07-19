@@ -636,9 +636,18 @@ start_service() {
 }
 
 reload_service() {
-	update_cron || return 1
-	stop || return 1
-	start
+	update_cron || {
+		log_error "reload failed: unable to update cron tasks"
+		return 1
+	}
+	stop || {
+		log_error "reload failed: unable to stop service"
+		return 1
+	}
+	start || {
+		log_error "reload failed: unable to start service"
+		return 1
+	}
 }
 
 start_now() {
