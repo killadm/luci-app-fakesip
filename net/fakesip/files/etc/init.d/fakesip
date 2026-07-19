@@ -388,6 +388,22 @@ stop_procd_service() {
 	return 1
 }
 
+service_is_running() {
+	ubus call service list "{\"name\":\"$NAME\"}" 2>/dev/null | grep -q '"running":[[:space:]]*true'
+}
+
+wait_for_running() {
+	local tries=0
+
+	while [ "$tries" -lt 4 ]; do
+		service_is_running && return 0
+		tries=$((tries + 1))
+		sleep 1
+	done
+
+	return 1
+}
+
 resolve_interface() {
 	local input="$1"
 	local dev
@@ -668,7 +684,11 @@ reload_service() {
 
 start_now() {
 	START_NOW=1
-	start
+	start || return 1
+	wait_for_running || {
+		log_error "start_now failed: service did not stay running"
+		return 1
+	}
 }
 
 stop_now() {
@@ -682,7 +702,11 @@ stop() {
 restart_now() {
 	stop_now || return 1
 	START_NOW=1
-	start
+	start || return 1
+	wait_for_running || {
+		log_error "restart_now failed: service did not stay running"
+		return 1
+	}
 }
 
 service_triggers() {
