@@ -121,10 +121,12 @@ function tailText(text, count) {
 }
 
 function renderLogBlock(title, text, count) {
-	return '<h3>' + escapeHTML(title) + '</h3>' +
-		'<pre style="max-height:32em;overflow:auto;white-space:pre-wrap">' +
-			escapeHTML(tailText(text, count)) +
-		'</pre>';
+	return E('div', { 'style': 'width:100%;box-sizing:border-box' }, [
+		E('h3', {}, title),
+		E('pre', {
+			'style': 'width:100%;box-sizing:border-box;max-height:32em;overflow:auto;white-space:pre-wrap'
+		}, [ tailText(text, count) ])
+	]);
 }
 
 function validateRange(min, max, message, allowEmpty) {
@@ -440,11 +442,17 @@ return view.extend({
 			return '<div class="cbi-value-field">' + escapeHTML(getScheduleText(crontab)) + '</div>';
 		};
 
-		o = s.taboption('logs', form.DummyValue, '_logs', '近期日志');
-		o.rawhtml = true;
-		o.cfgvalue = function() {
-			return renderLogBlock('系统日志', logOutput, 200) +
-				renderLogBlock('文件日志 ' + fileLogPath, fileLog, 200);
+		o = s.taboption('logs', form.DummyValue, '_logs');
+		o.render = function() {
+			return E('div', { 'class': 'cbi-value', 'style': 'display:block' }, [
+				E('div', {
+					'class': 'cbi-value-field',
+					'style': 'display:block;width:100%;margin-left:0'
+				}, [
+					renderLogBlock('系统日志', logOutput, 200),
+					renderLogBlock('文件日志 ' + fileLogPath, fileLog, 200)
+				])
+			]);
 		};
 
 		p = m.section(form.GridSection, 'payload', '负载选项');
