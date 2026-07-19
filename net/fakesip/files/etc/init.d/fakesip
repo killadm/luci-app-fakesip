@@ -465,6 +465,17 @@ validate_payload() {
 	return 0
 }
 
+validate_payloads() {
+	local sections section invalid=0
+
+	sections="$(uci -q show "$CONFIG" | sed -n "s/^$CONFIG\\.\\([^=]*\\)=payload$/\\1/p")"
+	for section in $sections; do
+		validate_payload "$section" || invalid=1
+	done
+
+	[ "$invalid" -eq 0 ]
+}
+
 append_payload() {
 	local section="$1"
 	local type value
@@ -573,7 +584,7 @@ validate_start_config() {
 		fi
 	fi
 
-	config_foreach validate_payload payload
+	validate_payloads
 }
 
 start_service() {
