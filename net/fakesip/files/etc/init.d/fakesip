@@ -637,7 +637,7 @@ start_service() {
 
 reload_service() {
 	update_cron || return 1
-	stop
+	stop || return 1
 	start
 }
 
