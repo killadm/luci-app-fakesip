@@ -238,11 +238,11 @@ update_cron() {
 	fi
 
 	if [ -n "$log_file" ]; then
-		validate_log_rotation_config "$log_file" "$log_max_size_kb" "$log_rotate_count" || {
-			cron_reload
-			return 1
-		}
-		log_cron_line="*/10 * * * * /etc/init.d/fakesip rotate_log >/dev/null 2>&1"
+		if validate_log_rotation_config "$log_file" "$log_max_size_kb" "$log_rotate_count"; then
+			log_cron_line="*/10 * * * * /etc/init.d/fakesip rotate_log >/dev/null 2>&1"
+		else
+			log_error "file log rotation cron skipped because log settings are invalid"
+		fi
 	fi
 
 	append_cron_block "$CRON_BEGIN" "$cron_line" "$CRON_END"
