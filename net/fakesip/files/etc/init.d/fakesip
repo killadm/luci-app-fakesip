@@ -20,6 +20,8 @@ DEFAULT_LOG_FILE="/var/log/fakesip/fakesip.log"
 DEFAULT_LOG_MAX_SIZE_KB="512"
 DEFAULT_LOG_ROTATE_COUNT="3"
 LOG_LOCK_MAX_AGE="3600"
+START_WAIT_SECONDS="8"
+START_WAIT_USLEEP="250000"
 
 EXTRA_COMMANDS="start_now stop_now restart_now update_cron clear_cron rotate_log cleanup_rules"
 EXTRA_HELP="	start_now	Start FakeSIP once without changing UCI enabled
@@ -380,12 +382,18 @@ service_is_running() {
 }
 
 wait_for_running() {
-	local tries=0
+	local deadline sleep_cmd
 
-	while [ "$tries" -lt 4 ]; do
+	deadline=$(($(date +%s) + START_WAIT_SECONDS))
+	if command -v usleep >/dev/null 2>&1; then
+		sleep_cmd="usleep $START_WAIT_USLEEP"
+	else
+		sleep_cmd="sleep 1"
+	fi
+
+	while [ "$(date +%s)" -le "$deadline" ]; do
 		service_is_running && return 0
-		tries=$((tries + 1))
-		sleep 1
+		$sleep_cmd
 	done
 
 	return 1
