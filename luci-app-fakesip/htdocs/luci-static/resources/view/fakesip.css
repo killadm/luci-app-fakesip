@@ -1,0 +1,40 @@
+.fakesip-status-meta {
+	margin-left: 1em;
+}
+
+.fakesip-log-panel {
+	width: 100%;
+	box-sizing: border-box;
+	max-height: 32em;
+	overflow: auto;
+	white-space: pre-wrap;
+}
+
+.fakesip-log-tabs > .cbi-tabmenu {
+	margin-bottom: .75em;
+}
+
+.fakesip-notification-log {
+	white-space: pre-wrap;
+}
+
+.fakesip-action-group {
+	display: flex;
+	gap: .5em;
+	flex-wrap: wrap;
+	align-items: center;
+}
+
+.fakesip-action-footer {
+	margin-top: .5em;
+}
+
+.fakesip-log-value,
+.fakesip-log-field {
+	display: block;
+}
+
+.fakesip-log-field {
+	width: 100%;
+	margin-left: 0;
+}
