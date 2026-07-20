@@ -78,4 +78,10 @@ define Package/fakesip/prerm
 exit 0
 endef
 
+define Package/fakesip/postrm
+#!/bin/sh
+rm -rf /var/log/fakesip /var/run/fakesip 2>/dev/null || true
+exit 0
+endef
+
 $(eval $(call BuildPackage,fakesip))
