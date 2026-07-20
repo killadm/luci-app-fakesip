@@ -228,8 +228,10 @@ function validateLogPath(sectionId, value) {
 	if (!value)
 		return true;
 
-	if (!/^\/var\/log\/fakesip\/[A-Za-z0-9._-]+$/.test(value) || value.indexOf('..') >= 0)
-		return '日志文件必须位于 /var/log/fakesip/，文件名只能包含字母、数字、点、下划线和短横线';
+	if (!/^\/(?:var\/log|mnt|opt)\/.+/.test(value) ||
+	    /(^|\/)\.\.(\/|$)/.test(value) ||
+	    /\/$/.test(value))
+		return '日志文件必须是 /var/log、/mnt 或 /opt 下的绝对路径，不能包含 .. 或以 / 结尾';
 
 	return true;
 }

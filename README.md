@@ -125,7 +125,7 @@ opkg install fakesip_*.ipk luci-app-fakesip_*.ipk
 - `dynamic_pct`：动态 TTL 百分比
 - `skip_firewall`：跳过防火墙规则
 - `use_iptables`：使用 iptables 兼容模式
-- `log_file`：FakeSIP 文件日志，必须位于 `/var/log/fakesip/`，默认 `/var/log/fakesip/fakesip.log`
+- `log_file`：FakeSIP 文件日志，必须是 `/var/log`、`/mnt` 或 `/opt` 下的绝对路径，默认 `/var/log/fakesip/fakesip.log`
 - `log_max_size_kb`：单个文件日志达到该大小后轮转，默认 `512` KB
 - `log_rotate_count`：保留的轮转日志份数，默认 `3`
 - `scheduled_restart`：启用定时重启

@@ -17,7 +17,6 @@ SCHEDULE_HELPER="/usr/libexec/fakesip-scheduled-restart"
 RUN_DIR="/var/run/fakesip"
 STAMP_FILE="$RUN_DIR/restart.stamp"
 DEFAULT_LOG_FILE="/var/log/fakesip/fakesip.log"
-LOG_DIR="/var/log/fakesip"
 DEFAULT_LOG_MAX_SIZE_KB="512"
 DEFAULT_LOG_ROTATE_COUNT="3"
 LOG_LOCK_MAX_AGE="3600"
@@ -153,28 +152,11 @@ validate_log_rotation_config() {
 	local log_file="$1"
 	local log_max_size_kb="$2"
 	local log_rotate_count="$3"
-	local base
 
 	[ -n "$log_file" ] || return 1
 
-	case "$log_file" in
-		"$LOG_DIR"/*) ;;
-		*)
-			log_error "log_file must be under $LOG_DIR"
-			return 1
-			;;
-	esac
-
-	base="${log_file#$LOG_DIR/}"
-	case "$base" in
-		''|*/*|*..*|*[!A-Za-z0-9._-]*)
-			log_error "log_file has an invalid file name: $log_file"
-			return 1
-			;;
-	esac
-
-	if [ -L "$log_file" ]; then
-		log_error "log_file must not be a symlink: $log_file"
+	if ! fakesip_validate_log_path "$log_file"; then
+		log_error "log_file must be an absolute path under /var/log, /mnt, or /opt without symlinks or parent traversal: $log_file"
 		return 1
 	fi
 
@@ -643,7 +625,7 @@ start_service() {
 	update_cron log_validated || return 1
 
 	if [ -n "$log_file" ]; then
-		mkdir -p "$LOG_DIR"
+		mkdir -p "$(dirname "$log_file")"
 		rotate_log log_validated "$log_file" "$log_max_size_kb" "$log_rotate_count" || true
 	fi
 

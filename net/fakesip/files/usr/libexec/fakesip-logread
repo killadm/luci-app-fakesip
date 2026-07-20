@@ -4,7 +4,6 @@ NAME="fakesip"
 CONFIG="fakesip"
 SECTION="main"
 DEFAULT_LOG_FILE="/var/log/fakesip/fakesip.log"
-LOG_DIR="/var/log/fakesip"
 DEFAULT_LINES="200"
 MAX_LINES="1000"
 MAX_BYTES="262144"
@@ -22,36 +21,13 @@ sanitize_lines() {
 	echo "$lines"
 }
 
-validate_log_path() {
-	local log_file="$1"
-	local base
-
-	[ -n "$log_file" ] || return 1
-
-	case "$log_file" in
-		"$LOG_DIR"/*) ;;
-		*) return 1 ;;
-	esac
-
-	base="${log_file#$LOG_DIR/}"
-	case "$base" in
-		''|*/*|*..*|*[!A-Za-z0-9._-]*)
-			return 1
-			;;
-	esac
-
-	[ ! -L "$log_file" ] || return 1
-
-	return 0
-}
-
 get_log_file() {
 	local log_file
 
 	config_load "$CONFIG"
 	config_get log_file "$SECTION" log_file "$DEFAULT_LOG_FILE"
 
-	validate_log_path "$log_file" || return 1
+	fakesip_validate_log_path "$log_file" || return 1
 
 	echo "$log_file"
 }
