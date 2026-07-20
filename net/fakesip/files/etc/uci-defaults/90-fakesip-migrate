@@ -1,0 +1,70 @@
+#!/bin/sh
+
+NAME="fakesip"
+CONFIG="fakesip"
+SECTION="main"
+
+migrate_fakesip_config() {
+	local payload_section log_file adopted_opkg
+
+	adopted_opkg=0
+	if [ ! -f /etc/config/fakesip ] && [ -f /etc/config/fakesip-opkg ]; then
+		mv /etc/config/fakesip-opkg /etc/config/fakesip || return 1
+		adopted_opkg=1
+	fi
+
+	uci -q get "$CONFIG.$SECTION" >/dev/null || uci -q set "$CONFIG.$SECTION=fakesip"
+
+	[ -n "$(uci -q get "$CONFIG.$SECTION.enabled")" ] || uci -q set "$CONFIG.$SECTION.enabled=0"
+	[ -n "$(uci -q get "$CONFIG.$SECTION.interface_mode")" ] || uci -q set "$CONFIG.$SECTION.interface_mode=custom"
+	[ -n "$(uci -q get "$CONFIG.$SECTION.interfaces")" ] || uci -q add_list "$CONFIG.$SECTION.interfaces=wan"
+
+	payload_section="$(uci -q show "$CONFIG" | sed -n 's/^fakesip\.\([^=]*\)=payload$/\1/p' | head -n 1)"
+	if [ -z "$payload_section" ]; then
+		payload_section="$(uci -q add "$CONFIG" payload)" || return 1
+		uci -q set "$CONFIG.$payload_section.type=sip"
+		uci -q set "$CONFIG.$payload_section.value="
+	fi
+
+	[ -n "$(uci -q get "$CONFIG.$SECTION.direction")" ] || uci -q set "$CONFIG.$SECTION.direction=both"
+	[ -n "$(uci -q get "$CONFIG.$SECTION.ip_family")" ] || uci -q set "$CONFIG.$SECTION.ip_family=both"
+	[ -n "$(uci -q get "$CONFIG.$SECTION.queue_num")" ] || uci -q set "$CONFIG.$SECTION.queue_num=513"
+	[ -n "$(uci -q get "$CONFIG.$SECTION.fwmark")" ] || uci -q set "$CONFIG.$SECTION.fwmark=0x10000"
+	[ -n "$(uci -q get "$CONFIG.$SECTION.fwmask")" ] || uci -q set "$CONFIG.$SECTION.fwmask="
+	[ -n "$(uci -q get "$CONFIG.$SECTION.repeat")" ] || uci -q set "$CONFIG.$SECTION.repeat=2"
+	[ -n "$(uci -q get "$CONFIG.$SECTION.ttl")" ] || uci -q set "$CONFIG.$SECTION.ttl=3"
+	[ -n "$(uci -q get "$CONFIG.$SECTION.dynamic_pct")" ] || uci -q set "$CONFIG.$SECTION.dynamic_pct="
+	[ -n "$(uci -q get "$CONFIG.$SECTION.disable_hop_estimation")" ] || uci -q set "$CONFIG.$SECTION.disable_hop_estimation=0"
+	[ -n "$(uci -q get "$CONFIG.$SECTION.skip_firewall")" ] || uci -q set "$CONFIG.$SECTION.skip_firewall=0"
+	[ -n "$(uci -q get "$CONFIG.$SECTION.use_iptables")" ] || uci -q set "$CONFIG.$SECTION.use_iptables=0"
+	[ -n "$(uci -q get "$CONFIG.$SECTION.silent")" ] || uci -q set "$CONFIG.$SECTION.silent=0"
+
+	log_file="$(uci -q get "$CONFIG.$SECTION.log_file")"
+	case "$log_file" in
+		''|'/var/log/fakesip.log')
+			uci -q set "$CONFIG.$SECTION.log_file=/var/log/fakesip/fakesip.log"
+			;;
+	esac
+	[ -n "$(uci -q get "$CONFIG.$SECTION.log_max_size_kb")" ] || uci -q set "$CONFIG.$SECTION.log_max_size_kb=512"
+	[ -n "$(uci -q get "$CONFIG.$SECTION.log_rotate_count")" ] || uci -q set "$CONFIG.$SECTION.log_rotate_count=3"
+
+	[ -n "$(uci -q get "$CONFIG.$SECTION.scheduled_restart")" ] || uci -q set "$CONFIG.$SECTION.scheduled_restart=0"
+	[ -n "$(uci -q get "$CONFIG.$SECTION.restart_mode")" ] || uci -q set "$CONFIG.$SECTION.restart_mode=daily"
+	[ -n "$(uci -q get "$CONFIG.$SECTION.restart_time")" ] || uci -q set "$CONFIG.$SECTION.restart_time=04:00"
+	[ -n "$(uci -q get "$CONFIG.$SECTION.restart_weekday")" ] || uci -q set "$CONFIG.$SECTION.restart_weekday=0"
+	[ -n "$(uci -q get "$CONFIG.$SECTION.restart_interval_hours")" ] || uci -q set "$CONFIG.$SECTION.restart_interval_hours=24"
+
+	uci -q commit "$CONFIG" || return 1
+
+	if [ "$adopted_opkg" -eq 1 ]; then
+		rm -f /etc/config/fakesip-opkg
+	fi
+}
+
+migrate_fakesip_config || {
+	logger -t "$NAME" -p daemon.err "ERROR: config migration failed; leaving /etc/config/fakesip-opkg untouched"
+	exit 1
+}
+
+/etc/init.d/fakesip update_cron >/dev/null 2>&1 || true
+exit 0

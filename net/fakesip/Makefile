@@ -50,6 +50,8 @@ define Package/fakesip/install
 	$(INSTALL_CONF) ./files/etc/config/fakesip $(1)/etc/config/fakesip
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/etc/init.d/fakesip $(1)/etc/init.d/fakesip
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_BIN) ./files/etc/uci-defaults/90-fakesip-migrate $(1)/etc/uci-defaults/90-fakesip-migrate
 	$(INSTALL_DIR) $(1)/usr/libexec
 	$(INSTALL_BIN) ./files/usr/libexec/fakesip-scheduled-restart $(1)/usr/libexec/fakesip-scheduled-restart
 	$(INSTALL_BIN) ./files/usr/libexec/fakesip-logread $(1)/usr/libexec/fakesip-logread
@@ -60,11 +62,6 @@ endef
 define Package/fakesip/postinst
 #!/bin/sh
 [ -n "$$IPKG_INSTROOT" ] || {
-	uci -q get fakesip.main >/dev/null || uci -q set fakesip.main=fakesip
-	[ -n "$$(uci -q get fakesip.main.log_file)" ] || uci -q set fakesip.main.log_file='/var/log/fakesip/fakesip.log'
-	[ -n "$$(uci -q get fakesip.main.log_max_size_kb)" ] || uci -q set fakesip.main.log_max_size_kb='512'
-	[ -n "$$(uci -q get fakesip.main.log_rotate_count)" ] || uci -q set fakesip.main.log_rotate_count='3'
-	uci -q commit fakesip
 	/etc/init.d/fakesip enable >/dev/null 2>&1 || true
 	/etc/init.d/fakesip update_cron >/dev/null 2>&1 || true
 }
