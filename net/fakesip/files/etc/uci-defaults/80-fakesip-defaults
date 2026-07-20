@@ -1,0 +1,37 @@
+#!/bin/sh
+
+[ -f /etc/config/fakesip ] && exit 0
+[ -f /etc/config/fakesip-opkg ] && exit 0
+
+uci -q batch <<-'EOF'
+	set fakesip.main=fakesip
+	set fakesip.main.enabled='0'
+	set fakesip.main.interface_mode='custom'
+	add_list fakesip.main.interfaces='wan'
+	set fakesip.main.direction='both'
+	set fakesip.main.ip_family='both'
+	set fakesip.main.queue_num='513'
+	set fakesip.main.fwmark='0x10000'
+	set fakesip.main.fwmask=''
+	set fakesip.main.repeat='2'
+	set fakesip.main.ttl='3'
+	set fakesip.main.dynamic_pct=''
+	set fakesip.main.disable_hop_estimation='0'
+	set fakesip.main.skip_firewall='0'
+	set fakesip.main.use_iptables='0'
+	set fakesip.main.silent='0'
+	set fakesip.main.log_file='/var/log/fakesip/fakesip.log'
+	set fakesip.main.log_max_size_kb='512'
+	set fakesip.main.log_rotate_count='3'
+	set fakesip.main.scheduled_restart='0'
+	set fakesip.main.restart_mode='daily'
+	set fakesip.main.restart_time='04:00'
+	set fakesip.main.restart_weekday='0'
+	set fakesip.main.restart_interval_hours='24'
+	add fakesip payload
+	set fakesip.@payload[-1].type='sip'
+	set fakesip.@payload[-1].value=''
+	commit fakesip
+EOF
+
+exit 0

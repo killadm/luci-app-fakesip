@@ -51,6 +51,7 @@ define Package/fakesip/install
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/etc/init.d/fakesip $(1)/etc/init.d/fakesip
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_BIN) ./files/etc/uci-defaults/80-fakesip-defaults $(1)/etc/uci-defaults/80-fakesip-defaults
 	$(INSTALL_BIN) ./files/etc/uci-defaults/90-fakesip-migrate $(1)/etc/uci-defaults/90-fakesip-migrate
 	$(INSTALL_DIR) $(1)/usr/libexec
 	$(INSTALL_BIN) ./files/usr/libexec/fakesip-scheduled-restart $(1)/usr/libexec/fakesip-scheduled-restart
