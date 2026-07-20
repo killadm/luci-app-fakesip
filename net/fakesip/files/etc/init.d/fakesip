@@ -459,15 +459,17 @@ validate_payload() {
 }
 
 validate_payloads() {
-	local section section_type invalid=0
+	local payload_invalid=0
 
-	for section in $CONFIG_SECTIONS; do
-		config_get section_type "$section" TYPE
-		[ "$section_type" = "payload" ] || continue
-		validate_payload "$section" || invalid=1
-	done
+	config_foreach validate_payload_entry payload
 
-	[ "$invalid" -eq 0 ]
+	[ "$payload_invalid" -eq 0 ]
+}
+
+validate_payload_entry() {
+	local section="$1"
+
+	validate_payload "$section" || payload_invalid=1
 }
 
 append_payload() {
