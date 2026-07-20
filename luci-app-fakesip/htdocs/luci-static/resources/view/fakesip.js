@@ -283,9 +283,33 @@ function validateFilterPortValue(value) {
 	return start >= 1 && start <= 65535 && end >= 1 && end <= 65535 && start <= end;
 }
 
+function getSiblingOption(section, optionName) {
+	var children = section && section.children ? section.children : [];
+
+	for (var i = 0; i < children.length; i++) {
+		if (children[i].option === optionName)
+			return children[i];
+	}
+
+	return null;
+}
+
+function getSiblingFormValue(currentOpt, fallbackOpt, sectionId, optionName) {
+	var opt = getSiblingOption(currentOpt && currentOpt.section, optionName) || fallbackOpt;
+
+	return opt ? opt.formvalue(sectionId) : null;
+}
+
+function revalidateSiblingOption(currentOpt, sectionId, optionName) {
+	var opt = getSiblingOption(currentOpt && currentOpt.section, optionName);
+
+	if (opt)
+		opt.isValid(sectionId);
+}
+
 function validateFilterValue(typeOpt) {
 	return function(sectionId, value) {
-		var type = typeOpt.formvalue(sectionId) || 'ip';
+		var type = getSiblingFormValue(this, typeOpt, sectionId, 'type') || 'ip';
 
 		if (!value)
 			return '请填写匹配值';
@@ -610,12 +634,15 @@ return view.extend({
 		payloadTypeOpt.value('custom', '自定义文件');
 		payloadTypeOpt.default = 'sip';
 		payloadTypeOpt.rmempty = false;
+		payloadTypeOpt.onchange = function(ev, sectionId) {
+			revalidateSiblingOption(this, sectionId, 'value');
+		};
 
 		o = p.option(form.Value, 'value', '值');
 		o.placeholder = 'sip:user@example.com 或 /etc/fakesip/payload.bin';
 		o.rmempty = true;
 		o.validate = function(sectionId, value) {
-			var type = payloadTypeOpt.formvalue(sectionId) || 'sip';
+			var type = getSiblingFormValue(this, payloadTypeOpt, sectionId, 'type') || 'sip';
 
 			if (type === 'sip') {
 				if (!value)
@@ -656,6 +683,9 @@ return view.extend({
 		filterTypeOpt.value('port', '端口 / 范围');
 		filterTypeOpt.default = 'ip';
 		filterTypeOpt.rmempty = false;
+		filterTypeOpt.onchange = function(ev, sectionId) {
+			revalidateSiblingOption(this, sectionId, 'value');
+		};
 
 		o = f.option(form.Value, 'value', '匹配值');
 		o.placeholder = '1.2.3.4/24、2001:db8::/32 或 5000-6000';
