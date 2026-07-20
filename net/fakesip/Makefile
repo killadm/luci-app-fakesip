@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=fakesip
-PKG_VERSION:=0.0.0_git20250730
+PKG_VERSION:=0.0.0+git20250730
 PKG_RELEASE:=4
 
 PKG_SOURCE_PROTO:=git
