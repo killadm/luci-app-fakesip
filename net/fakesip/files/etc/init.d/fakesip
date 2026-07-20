@@ -632,7 +632,6 @@ start_service() {
 
 	procd_open_instance "$NAME"
 	procd_set_param command "$PROG"
-	network_flush_cache
 
 	if [ "$interface_mode" = "all" ]; then
 		append_arg "-a"
