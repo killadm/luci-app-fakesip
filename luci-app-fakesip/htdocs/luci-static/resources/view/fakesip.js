@@ -128,62 +128,26 @@ function renderLogPanel(text, count) {
 }
 
 function renderLogTabs(systemLog, fileLog) {
-	var systemPanel = E('div', { 'style': 'display:none;width:100%;box-sizing:border-box' }, [
-		renderLogPanel(systemLog, 200)
-	]);
-	var filePanel = E('div', { 'style': 'display:block;width:100%;box-sizing:border-box' }, [
-		renderLogPanel(fileLog, 200)
-	]);
-	var systemTab, fileTab;
-
-	function setActive(type) {
-		var showFile = type === 'file';
-
-		filePanel.style.display = showFile ? 'block' : 'none';
-		systemPanel.style.display = showFile ? 'none' : 'block';
-		fileTab.className = showFile ? 'cbi-tab' : 'cbi-tab-disabled';
-		systemTab.className = showFile ? 'cbi-tab-disabled' : 'cbi-tab';
-		fileTab.setAttribute('aria-selected', showFile ? 'true' : 'false');
-		systemTab.setAttribute('aria-selected', showFile ? 'false' : 'true');
-	}
-
-	fileTab = E('li', {
-		'class': 'cbi-tab',
-		'role': 'tab',
-		'aria-selected': 'true'
-	}, [
-		E('a', {
-			'href': '#',
-			'click': function(ev) {
-				ev.preventDefault();
-				setActive('file');
-			}
-		}, [ '文件日志' ])
+	var tabs = E('div', { 'style': 'width:100%;box-sizing:border-box' }, [
+		E('div', {
+			'data-tab': 'file',
+			'data-tab-title': '文件日志',
+			'data-tab-active': 'true',
+			'style': 'width:100%;box-sizing:border-box'
+		}, [
+			renderLogPanel(fileLog, 200)
+		]),
+		E('div', {
+			'data-tab': 'system',
+			'data-tab-title': '系统日志',
+			'style': 'width:100%;box-sizing:border-box'
+		}, [
+			renderLogPanel(systemLog, 200)
+		])
 	]);
 
-	systemTab = E('li', {
-		'class': 'cbi-tab-disabled',
-		'role': 'tab',
-		'aria-selected': 'false'
-	}, [
-		E('a', {
-			'href': '#',
-			'click': function(ev) {
-				ev.preventDefault();
-				setActive('system');
-			}
-		}, [ '系统日志' ])
-	]);
-
-	return E('div', { 'style': 'width:100%;box-sizing:border-box' }, [
-		E('ul', {
-			'class': 'cbi-tabmenu',
-			'role': 'tablist',
-			'style': 'margin-bottom:.75em'
-		}, [ fileTab, systemTab ]),
-		filePanel,
-		systemPanel
-	]);
+	ui.tabs.initTabGroup(tabs.childNodes);
+	return tabs;
 }
 
 function validateRange(min, max, message, allowEmpty) {
