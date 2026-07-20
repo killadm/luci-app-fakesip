@@ -9,6 +9,21 @@ SECTION="main"
 RUN_DIR="/var/run/fakesip"
 STAMP_FILE="$RUN_DIR/restart.stamp"
 
+log_msg() {
+	local level="$1"
+
+	shift
+	logger -t "$NAME" -p "daemon.$level" "$*"
+}
+
+log_error() {
+	log_msg err "ERROR: $*"
+}
+
+log_notice() {
+	log_msg notice "$*"
+}
+
 load_settings() {
 	config_load "$CONFIG"
 	config_get_bool enabled "$SECTION" enabled 0
@@ -20,12 +35,12 @@ load_settings() {
 restart_fakesip() {
 	local output rc
 
-	logger -t "$NAME" "executing scheduled restart ($1)"
+	log_notice "executing scheduled restart ($1)"
 	output="$(/etc/init.d/fakesip restart 2>&1)" && return 0
 
 	rc="$?"
-	logger -t "$NAME" "ERROR: scheduled restart failed ($1), exit code $rc"
-	[ -n "$output" ] && printf '%s\n' "$output" | logger -t "$NAME"
+	log_error "scheduled restart failed ($1), exit code $rc"
+	[ -n "$output" ] && printf '%s\n' "$output" | logger -t "$NAME" -p daemon.err
 	return "$rc"
 }
 
