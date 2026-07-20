@@ -34,10 +34,22 @@ EXTRA_HELP="	start_now	Start FakeSIP once without changing UCI enabled
 
 . /lib/functions.sh
 . /lib/functions/network.sh
+. /lib/functions/procd.sh
 . /usr/share/fakesip/functions.sh
 
+log_msg() {
+	local level="$1"
+
+	shift
+	logger -t "$NAME" -p "daemon.$level" "$*"
+}
+
 log_error() {
-	logger -t "$NAME" "ERROR: $*"
+	log_msg err "ERROR: $*"
+}
+
+log_notice() {
+	log_msg notice "$*"
 }
 
 is_uint32() {
@@ -347,7 +359,7 @@ rotate_log() {
 
 	mv -f "$tmp" "$log_file.1"
 	: > "$log_file"
-	logger -t "$NAME" "rotated file log: $log_file (${size} bytes)"
+	log_notice "rotated file log: $log_file (${size} bytes)"
 
 	release_log_lock "$lock_dir"
 	return 0
