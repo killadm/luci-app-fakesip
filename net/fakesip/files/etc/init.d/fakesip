@@ -16,6 +16,7 @@ LOG_CRON_END="# END fakesip log rotate"
 SCHEDULE_HELPER="/usr/libexec/fakesip-scheduled-restart"
 RUN_DIR="/var/run/fakesip"
 STAMP_FILE="$RUN_DIR/restart.stamp"
+FILTER_FILE="$RUN_DIR/filter.rules"
 DEFAULT_LOG_FILE="/var/log/fakesip/fakesip.log"
 DEFAULT_LOG_MAX_SIZE_KB="512"
 DEFAULT_LOG_ROTATE_COUNT="3"
@@ -492,6 +493,156 @@ validate_payload_entry() {
 	validate_payload "$section" || payload_invalid=1
 }
 
+is_port() {
+	is_uint "$1" && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+is_ipv4_addr() {
+	local old_ifs="$IFS"
+	local octet
+
+	IFS=.
+	set -- $1
+	IFS="$old_ifs"
+
+	[ "$#" -eq 4 ] || return 1
+
+	for octet in "$@"; do
+		is_uint "$octet" && [ "$octet" -le 255 ] || return 1
+	done
+
+	return 0
+}
+
+is_ipv6_addr() {
+	case "$1" in
+		*:* ) ;;
+		*) return 1 ;;
+	esac
+
+	case "$1" in
+		''|*[!0-9A-Fa-f:.]*|*:::*) return 1 ;;
+	esac
+
+	return 0
+}
+
+is_filter_token() {
+	case "$1" in
+		''|*[!A-Za-z0-9:./-]*) return 1 ;;
+	esac
+	return 0
+}
+
+validate_filter_ip() {
+	local value="$1"
+	local addr prefix
+
+	case "$value" in
+		*/*)
+			addr="${value%%/*}"
+			prefix="${value#*/}"
+			[ -n "$addr" ] && [ -n "$prefix" ] || return 1
+			case "$prefix" in */*) return 1 ;; esac
+			;;
+		*)
+			addr="$value"
+			prefix=""
+			;;
+	esac
+
+	if is_ipv4_addr "$addr"; then
+		[ -z "$prefix" ] || { is_uint "$prefix" && [ "$prefix" -le 32 ]; }
+		return "$?"
+	fi
+
+	if is_ipv6_addr "$addr"; then
+		[ -z "$prefix" ] || { is_uint "$prefix" && [ "$prefix" -le 128 ]; }
+		return "$?"
+	fi
+
+	return 1
+}
+
+validate_filter_port() {
+	local value="$1"
+	local start end
+
+	case "$value" in
+		*-*)
+			start="${value%%-*}"
+			end="${value#*-}"
+			is_port "$start" && is_port "$end" && [ "$start" -le "$end" ]
+			return "$?"
+			;;
+		*)
+			is_port "$value"
+			return "$?"
+			;;
+	esac
+}
+
+validate_filter_rule() {
+	local section="$1"
+	local action type value
+
+	config_get action "$section" action "allow"
+	config_get type "$section" type "ip"
+	config_get value "$section" value
+
+	case "$action" in
+		allow|deny) ;;
+		*)
+			log_error "invalid filter action in section $section: $action"
+			return 1
+			;;
+	esac
+
+	case "$type" in
+		ip|port) ;;
+		*)
+			log_error "invalid filter type in section $section: $type"
+			return 1
+			;;
+	esac
+
+	is_filter_token "$value" || {
+		log_error "invalid filter value in section $section: $value"
+		return 1
+	}
+
+	case "$type" in
+		ip)
+			validate_filter_ip "$value" || {
+				log_error "invalid filter IP in section $section: $value"
+				return 1
+			}
+			;;
+		port)
+			validate_filter_port "$value" || {
+				log_error "invalid filter port in section $section: $value"
+				return 1
+			}
+			;;
+	esac
+
+	return 0
+}
+
+validate_filter_entry() {
+	local section="$1"
+
+	validate_filter_rule "$section" || filter_invalid=1
+}
+
+validate_filter_rules() {
+	local filter_invalid=0
+
+	config_foreach validate_filter_entry filter
+
+	[ "$filter_invalid" -eq 0 ]
+}
+
 append_payload() {
 	local section="$1"
 	local type value
@@ -512,6 +663,51 @@ append_payload() {
 			return 1
 			;;
 	esac
+}
+
+append_filter_rule() {
+	local section="$1"
+	local action type value
+
+	config_get action "$section" action "allow"
+	config_get type "$section" type "ip"
+	config_get value "$section" value
+
+	printf '%s %s %s\n' "$action" "$type" "$value" >> "$filter_output_file" || filter_write_failed=1
+	filter_write_count=$((filter_write_count + 1))
+}
+
+prepare_filter_file() {
+	local tmp
+
+	rm -f "$FILTER_FILE"
+	mkdir -p "$RUN_DIR" || return 1
+
+	tmp="$(mktemp "$RUN_DIR/filter.XXXXXX")" || return 1
+	filter_output_file="$tmp"
+	filter_write_count=0
+	filter_write_failed=0
+
+	config_foreach append_filter_rule filter
+	filter_output_file=""
+
+	if [ "$filter_write_failed" -ne 0 ]; then
+		rm -f "$tmp"
+		return 1
+	fi
+
+	if [ "$filter_write_count" -eq 0 ]; then
+		rm -f "$tmp"
+		return 0
+	fi
+
+	chmod 600 "$tmp" 2>/dev/null || true
+	mv -f "$tmp" "$FILTER_FILE" || {
+		rm -f "$tmp"
+		return 1
+	}
+
+	echo "$FILTER_FILE"
 }
 
 validate_start_config() {
@@ -539,6 +735,7 @@ validate_start_config() {
 	fi
 
 	validate_payloads || return 1
+	validate_filter_rules || return 1
 
 	case "$direction" in
 		both|inbound|outbound) ;;
@@ -607,7 +804,7 @@ validate_start_config() {
 start_service() {
 	local enabled interface_mode interfaces iface direction ip_family queue_num
 	local fwmark fwmask repeat ttl dynamic_pct disable_hop_estimation
-	local skip_firewall use_iptables silent log_file
+	local skip_firewall use_iptables silent log_file filter_file
 	local log_max_size_kb log_rotate_count
 
 	config_load "$CONFIG"
@@ -650,6 +847,11 @@ start_service() {
 		rotate_log log_validated "$log_file" "$log_max_size_kb" "$log_rotate_count" || true
 	fi
 
+	filter_file="$(prepare_filter_file)" || {
+		log_error "failed to prepare filter rules"
+		return 1
+	}
+
 	procd_open_instance "$NAME"
 	procd_set_param command "$PROG"
 
@@ -688,6 +890,7 @@ start_service() {
 	[ "$use_iptables" -eq 1 ] && append_arg "-z"
 	[ "$silent" -eq 1 ] && append_arg "-s"
 	append_optional_arg "-w" "$log_file"
+	append_optional_arg "-l" "$filter_file"
 
 	procd_set_param respawn 3600 5 5
 	procd_set_param stdout 1
@@ -720,7 +923,12 @@ start_now() {
 }
 
 stop_now() {
+	local rc
+
 	stop_procd_service
+	rc="$?"
+	rm -f "$FILTER_FILE"
+	return "$rc"
 }
 
 stop() {

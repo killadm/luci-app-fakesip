@@ -6,7 +6,6 @@
 'require uci';
 'require ui';
 'require tools.widgets as widgets';
-'require css!view/fakesip.css';
 
 var callServiceList = rpc.declare({
 	object: 'service',
@@ -17,6 +16,24 @@ var callServiceList = rpc.declare({
 
 var CRON_BEGIN = '# BEGIN fakesip scheduled restart';
 var initActionPending = false;
+var stylesheetId = 'fakesip-view-stylesheet';
+
+function loadStylesheet() {
+	var href = L.resource('view/fakesip.css');
+	var link = document.getElementById(stylesheetId);
+
+	if (link) {
+		if (link.getAttribute('href') !== href)
+			link.setAttribute('href', href);
+		return;
+	}
+
+	link = document.createElement('link');
+	link.id = stylesheetId;
+	link.rel = 'stylesheet';
+	link.href = href;
+	document.head.appendChild(link);
+}
 
 function escapeHTML(value) {
 	return String(value == null ? '' : value)
@@ -144,9 +161,10 @@ function renderLogTabs(systemLog, fileLog) {
 			renderLogPanel(systemLog, 200)
 		])
 	]);
+	var wrapper = E('div', { 'class': 'fakesip-log-tabs-wrap' }, [ tabs ]);
 
 	ui.tabs.initTabGroup(tabs.childNodes);
-	return tabs;
+	return wrapper;
 }
 
 function validateRange(min, max, message, allowEmpty) {
@@ -197,6 +215,92 @@ function validateLogPath(sectionId, value) {
 		return '日志文件必须是 /var/log、/mnt 或 /opt 下的绝对路径，不能包含 .. 或以 / 结尾';
 
 	return true;
+}
+
+function isValidIPv4(value) {
+	var parts = String(value || '').split('.');
+
+	if (parts.length !== 4)
+		return false;
+
+	for (var i = 0; i < parts.length; i++) {
+		if (!/^(0|[1-9][0-9]{0,2})$/.test(parts[i]))
+			return false;
+		if (Number(parts[i]) > 255)
+			return false;
+	}
+
+	return true;
+}
+
+function isValidIPv6(value) {
+	if (String(value || '').indexOf(':') < 0)
+		return false;
+
+	try {
+		return new URL('http://[' + value + ']/').hostname.length > 0;
+	} catch (e) {
+		return false;
+	}
+}
+
+function validateFilterIpValue(value) {
+	var parts = String(value || '').split('/');
+	var addr = parts[0];
+	var prefix;
+
+	if (parts.length > 2 || !addr)
+		return false;
+
+	if (parts.length === 2) {
+		prefix = Number(parts[1]);
+		if (!/^[0-9]+$/.test(parts[1]))
+			return false;
+	}
+
+	if (isValidIPv4(addr))
+		return parts.length === 1 || (prefix >= 0 && prefix <= 32);
+
+	if (isValidIPv6(addr))
+		return parts.length === 1 || (prefix >= 0 && prefix <= 128);
+
+	return false;
+}
+
+function validateFilterPortValue(value) {
+	var parts = String(value || '').split('-');
+	var start, end;
+
+	if (parts.length > 2 || !/^[0-9]+$/.test(parts[0] || ''))
+		return false;
+
+	start = Number(parts[0]);
+	end = parts.length === 2 ? Number(parts[1]) : start;
+
+	if (parts.length === 2 && !/^[0-9]+$/.test(parts[1] || ''))
+		return false;
+
+	return start >= 1 && start <= 65535 && end >= 1 && end <= 65535 && start <= end;
+}
+
+function validateFilterValue(typeOpt) {
+	return function(sectionId, value) {
+		var type = typeOpt.formvalue(sectionId) || 'ip';
+
+		if (!value)
+			return '请填写匹配值';
+
+		if (/[\s#]/.test(value) || !/^[A-Za-z0-9:./-]+$/.test(value))
+			return '匹配值不能包含空白、# 或特殊字符';
+
+		if (type === 'ip' && !validateFilterIpValue(value))
+			return '请输入有效的 IPv4、IPv6 或 CIDR';
+
+		if (type === 'port' && !validateFilterPortValue(value))
+			return '请输入 1-65535 的端口或端口范围';
+
+		return true;
+	};
 }
 
 function validateOptionalMark(sectionId, value) {
@@ -277,6 +381,8 @@ function renderActionGroup(actions, footer) {
 
 return view.extend({
 	load: function() {
+		loadStylesheet();
+
 		return uci.load('fakesip').then(function() {
 			return Promise.all([
 				L.resolveDefault(callServiceList('fakesip'), {}),
@@ -294,7 +400,7 @@ return view.extend({
 		var crontab = data[1] || '';
 		var logOutput = data[2] && data[2].stdout ? data[2].stdout : '';
 		var fileLog = data[3] && data[3].stdout ? data[3].stdout : '';
-		var m, s, o, p, enabledOpt, ifaceModeOpt, noHop, payloadTypeOpt;
+		var m, s, o, p, f, enabledOpt, ifaceModeOpt, noHop, payloadTypeOpt, filterTypeOpt;
 
 		m = new form.Map('fakesip', 'FakeSIP');
 
@@ -533,6 +639,28 @@ return view.extend({
 
 			return true;
 		};
+
+		f = m.section(form.GridSection, 'filter', '过滤规则');
+		f.anonymous = true;
+		f.addremove = true;
+		f.addbtntitle = '添加规则';
+
+		o = f.option(form.ListValue, 'action', '动作');
+		o.value('allow', '白名单');
+		o.value('deny', '黑名单');
+		o.default = 'allow';
+		o.rmempty = false;
+
+		filterTypeOpt = f.option(form.ListValue, 'type', '类型');
+		filterTypeOpt.value('ip', 'IP / CIDR');
+		filterTypeOpt.value('port', '端口 / 范围');
+		filterTypeOpt.default = 'ip';
+		filterTypeOpt.rmempty = false;
+
+		o = f.option(form.Value, 'value', '匹配值');
+		o.placeholder = '1.2.3.4/24、2001:db8::/32 或 5000-6000';
+		o.rmempty = false;
+		o.validate = validateFilterValue(filterTypeOpt);
 
 		return m.render();
 	}
