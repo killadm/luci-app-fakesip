@@ -8,6 +8,8 @@ CONFIG="fakesip"
 SECTION="main"
 RUN_DIR="/var/run/fakesip"
 STAMP_FILE="$RUN_DIR/restart.stamp"
+LOCK_DIR="$RUN_DIR/restart.lock"
+LOCK_TIMEOUT="300"
 
 log_msg() {
 	local level="$1"
@@ -44,18 +46,39 @@ restart_fakesip() {
 	return "$rc"
 }
 
+acquire_restart_lock() {
+	local now="$1"
+	local lock_mtime lock_age
+
+	if mkdir "$LOCK_DIR" 2>/dev/null; then
+		trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT INT TERM
+		return 0
+	fi
+
+	lock_mtime="$(stat -c %Y "$LOCK_DIR" 2>/dev/null)"
+	is_uint "$lock_mtime" || exit 0
+
+	lock_age=$((now - lock_mtime))
+	[ "$lock_age" -ge "$LOCK_TIMEOUT" ] || exit 0
+
+	rmdir "$LOCK_DIR" 2>/dev/null || exit 0
+	mkdir "$LOCK_DIR" 2>/dev/null || exit 0
+	trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT INT TERM
+}
+
 run_interval() {
 	local now last interval elapsed
 
 	is_uint "$restart_interval_hours" || exit 0
 	[ "$restart_interval_hours" -ge 1 ] && [ "$restart_interval_hours" -le 168 ] || exit 0
 
-	mkdir -p "$RUN_DIR"
+	mkdir -p "$RUN_DIR" || exit 1
 	now="$(date +%s)"
+	acquire_restart_lock "$now"
 	last="$(cat "$STAMP_FILE" 2>/dev/null)"
 
 	if ! is_uint "$last"; then
-		echo "$now" > "$STAMP_FILE"
+		echo "$now" > "$STAMP_FILE" || exit 1
 		exit 0
 	fi
 
@@ -64,6 +87,7 @@ run_interval() {
 
 	[ "$elapsed" -ge "$interval" ] || exit 0
 
+	echo "$now" > "$STAMP_FILE" || exit 1
 	restart_fakesip "interval" || exit "$?"
 	date +%s > "$STAMP_FILE"
 }
