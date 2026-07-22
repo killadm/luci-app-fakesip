@@ -62,9 +62,18 @@ list_rotated_logs() {
 		tail -n "$limit"
 }
 
+cleanup_file_log_tmp() {
+	local tmp_dir="$1"
+
+	[ -n "$tmp_dir" ] || return 0
+	rm -f "$tmp_dir"/chunk.* "$tmp_dir/files" "$tmp_dir/selected" 2>/dev/null
+	rmdir "$tmp_dir" 2>/dev/null
+}
+
 read_file_log() {
 	local lines="$1"
-	local log_file rotate_count rotated_logs
+	local log_file rotate_count rotated_logs tmp_dir files_file selected_file
+	local path total_bytes remaining_bytes chunk_index chunk_file chunk_bytes
 
 	log_file="$(get_log_file)" || {
 		echo "文件日志未启用或路径无效"
@@ -79,12 +88,49 @@ read_file_log() {
 		return 0
 	fi
 
+	tmp_dir="$(mktemp -d /tmp/fakesip-logread.XXXXXX)" || return 1
+	files_file="$tmp_dir/files"
+	selected_file="$tmp_dir/selected"
+	total_bytes=0
+	chunk_index=0
+
 	{
 		[ -n "$rotated_logs" ] && printf '%s\n' "$rotated_logs"
 		[ -f "$log_file" ] && echo "$log_file"
-	} | while IFS= read -r path; do
-		[ -f "$path" ] && cat "$path"
-	done 2>/dev/null | tail -c "$MAX_BYTES" | tail -n "$lines"
+	} > "$files_file"
+
+	awk '{ files[NR] = $0 } END { for (i = NR; i >= 1; i--) print files[i] }' "$files_file" |
+	while IFS= read -r path; do
+		[ -f "$path" ] || continue
+		[ "$total_bytes" -lt "$MAX_BYTES" ] || break
+
+		remaining_bytes=$((MAX_BYTES - total_bytes))
+		chunk_index=$((chunk_index + 1))
+		chunk_file="$tmp_dir/chunk.$(printf '%06d' "$chunk_index")"
+
+		tail -c "$remaining_bytes" "$path" > "$chunk_file" 2>/dev/null || {
+			rm -f "$chunk_file"
+			continue
+		}
+
+		chunk_bytes="$(wc -c < "$chunk_file" 2>/dev/null)"
+		is_uint "$chunk_bytes" || chunk_bytes=0
+		[ "$chunk_bytes" -gt 0 ] || {
+			rm -f "$chunk_file"
+			continue
+		}
+
+		total_bytes=$((total_bytes + chunk_bytes))
+		echo "$chunk_file" >> "$selected_file"
+	done
+
+	if [ -s "$selected_file" ]; then
+		sort -r "$selected_file" | while IFS= read -r path; do
+			[ -f "$path" ] && cat "$path"
+		done 2>/dev/null | tail -c "$MAX_BYTES" | tail -n "$lines"
+	fi
+
+	cleanup_file_log_tmp "$tmp_dir"
 }
 
 read_system_log() {
