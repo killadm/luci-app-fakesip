@@ -836,7 +836,7 @@ stop_now() {
 
 	stop_procd_service
 	rc="$?"
-	rm -f "$FILTER_FILE"
+	rm -f "$FILTER_FILE" "$STAMP_FILE"
 	return "$rc"
 }
 
