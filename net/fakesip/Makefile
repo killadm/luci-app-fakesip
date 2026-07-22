@@ -1,12 +1,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=fakesip
-PKG_VERSION:=0.0.0+git20260720
-PKG_RELEASE:=4
+PKG_VERSION:=0.0.0+git20260722
+PKG_RELEASE:=5
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/killadm/FakeSIP.git
-PKG_SOURCE_DATE:=2026-07-20
+PKG_SOURCE_DATE:=2026-07-22
 PKG_SOURCE_VERSION:=master
 PKG_MIRROR_HASH:=skip
 
@@ -22,7 +22,7 @@ define Package/fakesip
   SUBMENU:=Firewall
   TITLE:=Disguise UDP traffic as SIP with NFQUEUE
   URL:=https://github.com/MikeWang000000/FakeSIP
-  DEPENDS:=+libnetfilter-queue +libnfnetlink +libmnl +nftables +kmod-nfnetlink-queue +kmod-nft-queue
+  DEPENDS:=+libpthread +libnetfilter-queue +libnfnetlink +libmnl +nftables +kmod-nfnetlink-queue +kmod-nft-queue
 endef
 
 define Package/fakesip/description
@@ -52,7 +52,6 @@ define Package/fakesip/install
 	$(INSTALL_BIN) ./files/etc/init.d/fakesip $(1)/etc/init.d/fakesip
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_BIN) ./files/etc/uci-defaults/80-fakesip-defaults $(1)/etc/uci-defaults/80-fakesip-defaults
-	$(INSTALL_BIN) ./files/etc/uci-defaults/90-fakesip-migrate $(1)/etc/uci-defaults/90-fakesip-migrate
 	$(INSTALL_DIR) $(1)/usr/libexec
 	$(INSTALL_BIN) ./files/usr/libexec/fakesip-scheduled-restart $(1)/usr/libexec/fakesip-scheduled-restart
 	$(INSTALL_BIN) ./files/usr/libexec/fakesip-logread $(1)/usr/libexec/fakesip-logread

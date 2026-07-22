@@ -217,6 +217,13 @@ function validateLogPath(sectionId, value) {
 	return true;
 }
 
+function validateLogMaxSize(sectionId, value) {
+	if (!/^[0-9]+[KkMmGg]?$/.test(value || ''))
+		return '请输入纯数字字节数，或带 K、M、G 后缀的大小；0 表示关闭内置轮转';
+
+	return true;
+}
+
 function isValidIPv4(value) {
 	var parts = String(value || '').split('.');
 
@@ -554,17 +561,19 @@ return view.extend({
 		o.rmempty = true;
 		o.validate = validateLogPath;
 
-		o = s.taboption('advanced', form.Value, 'log_max_size_kb', '日志轮转大小（KB）');
-		o.default = '512';
-		o.placeholder = '512';
+		o = s.taboption('advanced', form.Value, 'log_max_size', '日志轮转大小');
+		o.default = '1M';
+		o.placeholder = '1M';
 		o.rmempty = false;
-		o.validate = validateRange(64, 16384, '日志轮转大小范围为 64 到 16384 KB', false);
+		o.description = '对应 --log-max-size，支持纯数字字节数或 K/M/G 后缀；0 表示关闭内置轮转。';
+		o.validate = validateLogMaxSize;
 
 		o = s.taboption('advanced', form.Value, 'log_rotate_count', '日志保留份数');
 		o.default = '3';
 		o.placeholder = '3';
 		o.rmempty = false;
-		o.validate = validateRange(1, 10, '日志保留份数范围为 1 到 10', false);
+		o.description = '对应 --log-rotate；0 表示超过大小后不保留历史日志。';
+		o.validate = validateRange(0, 1000, '日志保留份数范围为 0 到 1000', false);
 
 		o = s.taboption('schedule', form.Flag, 'scheduled_restart', '启用定时重启');
 		o.rmempty = false;

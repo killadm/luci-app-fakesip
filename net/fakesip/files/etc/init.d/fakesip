@@ -18,19 +18,17 @@ RUN_DIR="/var/run/fakesip"
 STAMP_FILE="$RUN_DIR/restart.stamp"
 FILTER_FILE="$RUN_DIR/filter.rules"
 DEFAULT_LOG_FILE="/var/log/fakesip/fakesip.log"
-DEFAULT_LOG_MAX_SIZE_KB="512"
+DEFAULT_LOG_MAX_SIZE="1M"
 DEFAULT_LOG_ROTATE_COUNT="3"
-LOG_LOCK_MAX_AGE="3600"
 START_WAIT_SECONDS="8"
 START_WAIT_USLEEP="250000"
 
-EXTRA_COMMANDS="start_now stop_now restart_now update_cron clear_cron rotate_log cleanup_rules"
+EXTRA_COMMANDS="start_now stop_now restart_now update_cron clear_cron cleanup_rules"
 EXTRA_HELP="	start_now	Start FakeSIP once without changing UCI enabled
 	stop_now	Stop FakeSIP and ignore missing procd service
 	restart_now	Restart FakeSIP once without changing UCI enabled
 	update_cron	Rebuild FakeSIP cron tasks
 	clear_cron	Remove FakeSIP cron tasks
-	rotate_log	Rotate FakeSIP file log if it exceeds configured size
 	cleanup_rules	Remove stale FakeSIP firewall rules"
 
 . /lib/functions.sh
@@ -163,9 +161,25 @@ append_cron_block() {
 	} >> "$CRON_FILE"
 }
 
+is_log_size() {
+	local value="$1"
+	local number
+
+	case "$value" in
+		''|*[!0-9KkMmGg]*) return 1 ;;
+	esac
+
+	case "$value" in
+		*[KkMmGg]) number="${value%?}" ;;
+		*) number="$value" ;;
+	esac
+
+	is_uint "$number"
+}
+
 validate_log_rotation_config() {
 	local log_file="$1"
-	local log_max_size_kb="$2"
+	local log_max_size="$2"
 	local log_rotate_count="$3"
 
 	[ -n "$log_file" ] || return 1
@@ -175,12 +189,12 @@ validate_log_rotation_config() {
 		return 1
 	fi
 
-	is_uint "$log_max_size_kb" && [ "$log_max_size_kb" -ge 64 ] && [ "$log_max_size_kb" -le 16384 ] || {
-		log_error "invalid log_max_size_kb: $log_max_size_kb"
+	is_log_size "$log_max_size" || {
+		log_error "invalid log_max_size: $log_max_size"
 		return 1
 	}
 
-	is_uint "$log_rotate_count" && [ "$log_rotate_count" -ge 1 ] && [ "$log_rotate_count" -le 10 ] || {
+	is_uint "$log_rotate_count" && [ "$log_rotate_count" -ge 0 ] && [ "$log_rotate_count" -le 1000 ] || {
 		log_error "invalid log_rotate_count: $log_rotate_count"
 		return 1
 	}
@@ -190,9 +204,7 @@ validate_log_rotation_config() {
 
 update_cron() {
 	local enabled scheduled_restart restart_mode restart_time restart_weekday restart_interval_hours
-	local log_file log_max_size_kb log_rotate_count
-	local hour minute cron_line log_cron_line
-	local skip_log_validation="$1"
+	local hour minute cron_line
 
 	config_load "$CONFIG"
 	config_get_bool enabled "$SECTION" enabled 0
@@ -201,9 +213,6 @@ update_cron() {
 	config_get restart_time "$SECTION" restart_time "04:00"
 	config_get restart_weekday "$SECTION" restart_weekday "0"
 	config_get restart_interval_hours "$SECTION" restart_interval_hours "24"
-	config_get log_file "$SECTION" log_file "$DEFAULT_LOG_FILE"
-	config_get log_max_size_kb "$SECTION" log_max_size_kb "$DEFAULT_LOG_MAX_SIZE_KB"
-	config_get log_rotate_count "$SECTION" log_rotate_count "$DEFAULT_LOG_ROTATE_COUNT"
 
 	mkdir -p "$(dirname "$CRON_FILE")"
 	touch "$CRON_FILE"
@@ -255,115 +264,9 @@ update_cron() {
 		esac
 	fi
 
-	if [ -n "$log_file" ]; then
-		if [ "$skip_log_validation" = "log_validated" ] || validate_log_rotation_config "$log_file" "$log_max_size_kb" "$log_rotate_count"; then
-			log_cron_line="*/10 * * * * /etc/init.d/fakesip rotate_log >/dev/null 2>&1"
-		else
-			log_error "file log rotation cron skipped because log settings are invalid"
-		fi
-	fi
-
 	append_cron_block "$CRON_BEGIN" "$cron_line" "$CRON_END"
-	append_cron_block "$LOG_CRON_BEGIN" "$log_cron_line" "$LOG_CRON_END"
 
 	cron_reload
-}
-
-get_file_size() {
-	stat -c %s "$1" 2>/dev/null || wc -c < "$1" 2>/dev/null || echo 0
-}
-
-clear_stale_log_lock() {
-	local lock_dir="$1"
-	local pid now mtime age
-
-	pid="$(cat "$lock_dir/pid" 2>/dev/null)"
-	if is_uint "$pid" && kill -0 "$pid" 2>/dev/null; then
-		return 1
-	fi
-
-	now="$(date +%s)"
-	mtime="$(stat -c %Y "$lock_dir" 2>/dev/null || echo 0)"
-	is_uint "$mtime" || mtime=0
-	age=$((now - mtime))
-
-	if [ -n "$pid" ] || [ "$age" -ge "$LOG_LOCK_MAX_AGE" ]; then
-		rm -f "$lock_dir/pid"
-		rmdir "$lock_dir" 2>/dev/null
-	fi
-}
-
-release_log_lock() {
-	local lock_dir="$1"
-
-	rm -f "$lock_dir/pid"
-	rmdir "$lock_dir" 2>/dev/null
-	trap - EXIT INT TERM
-}
-
-rotate_log() {
-	local log_file log_max_size_kb log_rotate_count
-	local max_bytes size dir lock_dir tmp i next
-	local log_validated=0
-
-	if [ "$1" = "log_validated" ]; then
-		log_validated=1
-		log_file="$2"
-		log_max_size_kb="$3"
-		log_rotate_count="$4"
-	else
-		config_load "$CONFIG"
-		config_get log_file "$SECTION" log_file "$DEFAULT_LOG_FILE"
-		config_get log_max_size_kb "$SECTION" log_max_size_kb "$DEFAULT_LOG_MAX_SIZE_KB"
-		config_get log_rotate_count "$SECTION" log_rotate_count "$DEFAULT_LOG_ROTATE_COUNT"
-	fi
-
-	[ -n "$log_file" ] || return 0
-	[ "$log_validated" -eq 1 ] || validate_log_rotation_config "$log_file" "$log_max_size_kb" "$log_rotate_count" || return 1
-
-	[ -f "$log_file" ] || return 0
-
-	max_bytes=$((log_max_size_kb * 1024))
-	size="$(get_file_size "$log_file")"
-	is_uint "$size" || size=0
-	[ "$size" -gt "$max_bytes" ] || return 0
-
-	dir="$(dirname "$log_file")"
-	mkdir -p "$dir" "$RUN_DIR"
-
-	lock_dir="$RUN_DIR/logrotate.lock"
-	mkdir "$lock_dir" 2>/dev/null || {
-		clear_stale_log_lock "$lock_dir" || return 0
-		mkdir "$lock_dir" 2>/dev/null || return 0
-	}
-	echo "$$" > "$lock_dir/pid"
-	trap 'release_log_lock "$lock_dir"' EXIT INT TERM
-
-	tmp="$(mktemp "$dir/.fakesip-log.XXXXXX")" || {
-		release_log_lock "$lock_dir"
-		return 1
-	}
-
-	if ! tail -c "$max_bytes" "$log_file" > "$tmp"; then
-		rm -f "$tmp"
-		release_log_lock "$lock_dir"
-		return 1
-	fi
-
-	rm -f "$log_file.$log_rotate_count"
-	i=$((log_rotate_count - 1))
-	while [ "$i" -ge 1 ]; do
-		next=$((i + 1))
-		[ -f "$log_file.$i" ] && mv -f "$log_file.$i" "$log_file.$next"
-		i=$((i - 1))
-	done
-
-	mv -f "$tmp" "$log_file.1"
-	: > "$log_file"
-	log_notice "rotated file log: $log_file (${size} bytes)"
-
-	release_log_lock "$lock_dir"
-	return 0
 }
 
 append_arg() {
@@ -712,7 +615,7 @@ prepare_filter_file() {
 
 validate_start_config() {
 	local interface_mode interfaces direction ip_family queue_num fwmark fwmask repeat ttl
-	local dynamic_pct disable_hop_estimation log_file log_max_size_kb log_rotate_count
+	local dynamic_pct disable_hop_estimation log_file log_max_size log_rotate_count
 
 	config_get interface_mode "$SECTION" interface_mode "custom"
 	config_get interfaces "$SECTION" interfaces
@@ -726,7 +629,7 @@ validate_start_config() {
 	config_get dynamic_pct "$SECTION" dynamic_pct
 	config_get_bool disable_hop_estimation "$SECTION" disable_hop_estimation 0
 	config_get log_file "$SECTION" log_file "$DEFAULT_LOG_FILE"
-	config_get log_max_size_kb "$SECTION" log_max_size_kb "$DEFAULT_LOG_MAX_SIZE_KB"
+	config_get log_max_size "$SECTION" log_max_size "$DEFAULT_LOG_MAX_SIZE"
 	config_get log_rotate_count "$SECTION" log_rotate_count "$DEFAULT_LOG_ROTATE_COUNT"
 
 	if [ "$interface_mode" != "all" ] && [ -z "$interfaces" ]; then
@@ -779,7 +682,7 @@ validate_start_config() {
 		fi
 	fi
 
-	[ -z "$log_file" ] || validate_log_rotation_config "$log_file" "$log_max_size_kb" "$log_rotate_count" || return 1
+	[ -z "$log_file" ] || validate_log_rotation_config "$log_file" "$log_max_size" "$log_rotate_count" || return 1
 
 	[ -z "$fwmark" ] || is_mark "$fwmark" || {
 		log_error "invalid fwmark: $fwmark"
@@ -805,7 +708,7 @@ start_service() {
 	local enabled interface_mode interfaces iface direction ip_family queue_num
 	local fwmark fwmask repeat ttl dynamic_pct disable_hop_estimation
 	local skip_firewall use_iptables silent log_file filter_file
-	local log_max_size_kb log_rotate_count
+	local log_max_size log_rotate_count
 
 	config_load "$CONFIG"
 
@@ -835,16 +738,18 @@ start_service() {
 	config_get_bool use_iptables "$SECTION" use_iptables 0
 	config_get_bool silent "$SECTION" silent 0
 	config_get log_file "$SECTION" log_file "$DEFAULT_LOG_FILE"
-	config_get log_max_size_kb "$SECTION" log_max_size_kb "$DEFAULT_LOG_MAX_SIZE_KB"
+	config_get log_max_size "$SECTION" log_max_size "$DEFAULT_LOG_MAX_SIZE"
 	config_get log_rotate_count "$SECTION" log_rotate_count "$DEFAULT_LOG_ROTATE_COUNT"
 
 	validate_start_config || return 1
 
-	update_cron log_validated || return 1
+	update_cron || return 1
 
 	if [ -n "$log_file" ]; then
-		mkdir -p "$(dirname "$log_file")"
-		rotate_log log_validated "$log_file" "$log_max_size_kb" "$log_rotate_count" || true
+		mkdir -p "$(dirname "$log_file")" || {
+			log_error "failed to create log directory: $(dirname "$log_file")"
+			return 1
+		}
 	fi
 
 	filter_file="$(prepare_filter_file)" || {
@@ -889,7 +794,11 @@ start_service() {
 	[ "$skip_firewall" -eq 1 ] && append_arg "-f"
 	[ "$use_iptables" -eq 1 ] && append_arg "-z"
 	[ "$silent" -eq 1 ] && append_arg "-s"
-	append_optional_arg "-w" "$log_file"
+	if [ -n "$log_file" ]; then
+		append_arg "-w" "$log_file"
+		append_arg "--log-max-size" "$log_max_size"
+		append_arg "--log-rotate" "$log_rotate_count"
+	fi
 	append_optional_arg "-l" "$filter_file"
 
 	procd_set_param respawn 3600 5 5

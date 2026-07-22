@@ -16,7 +16,7 @@
 - 支持 NFQUEUE、fwmark、TTL、重复包、动态 TTL
 - 支持 IP/CIDR 与端口范围黑白名单过滤规则
 - 支持每天、每周、按小时定时重启
-- 支持文件日志按大小自动轮转，LuCI 只读取最近日志片段，避免大日志拖慢页面
+- 支持 FakeSIP 内置异步文件日志线程与按大小自动轮转，LuCI 只读取最近日志片段，避免大日志拖慢页面
 - LuCI 页面提供状态查看、启动、停止、重启、更新定时任务、清理残留规则和最近日志查看
 
 ## 目标环境
@@ -100,6 +100,7 @@ opkg install fakesip_*.ipk luci-app-fakesip_*.ipk
 - `libnetfilter-queue`
 - `libnfnetlink`
 - `libmnl`
+- `libpthread`
 - `nftables`
 - `kmod-nfnetlink-queue`
 - `kmod-nft-queue`
@@ -126,9 +127,9 @@ opkg install fakesip_*.ipk luci-app-fakesip_*.ipk
 - `dynamic_pct`：动态 TTL 百分比
 - `skip_firewall`：跳过防火墙规则
 - `use_iptables`：使用 iptables 兼容模式
-- `log_file`：FakeSIP 文件日志，必须是 `/var/log`、`/mnt` 或 `/opt` 下的绝对路径，默认 `/var/log/fakesip/fakesip.log`
-- `log_max_size_kb`：单个文件日志达到该大小后轮转，默认 `512` KB
-- `log_rotate_count`：保留的轮转日志份数，默认 `3`
+- `log_file`：FakeSIP 文件日志，必须是 `/var/log`、`/mnt` 或 `/opt` 下的绝对路径，不能包含 `..` 或指向符号链接，默认 `/var/log/fakesip/fakesip.log`；留空时不传递 `-w`，日志输出到 stderr
+- `log_max_size`：对应 `--log-max-size`，支持纯数字字节数或 `K`、`M`、`G` 后缀，默认 `1M`；设置为 `0` 表示关闭内置轮转
+- `log_rotate_count`：对应 `--log-rotate`，保留的轮转日志份数，默认 `3`；设置为 `0` 表示超过大小后不保留历史日志
 - `scheduled_restart`：启用定时重启
 
 过滤规则使用独立的 `config filter` 节：
@@ -156,9 +157,14 @@ config filter
 /etc/init.d/fakesip stop
 /etc/init.d/fakesip restart
 /etc/init.d/fakesip update_cron
-/etc/init.d/fakesip rotate_log
 /etc/init.d/fakesip cleanup_rules
 ```
+
+## 日志写入与轮转
+
+配置 `log_file` 后，init 脚本会向 FakeSIP 传递 `-w <file>`，FakeSIP 会启用异步文件日志线程。主处理线程只负责格式化日志并写入队列，实际文件写入、flush、大小检查和轮转由日志线程完成。
+
+默认单个日志文件达到 `1M` 后轮转，保留 `3` 份历史日志。轮转文件名格式为 `<logpath>.YYYYmmdd-HHMMSS`，同一秒内多次轮转时会追加数字后缀。`log_max_size=0` 会关闭内置轮转，`log_rotate_count=0` 表示超过大小后不保留历史日志。
 
 ## 定时重启
 
