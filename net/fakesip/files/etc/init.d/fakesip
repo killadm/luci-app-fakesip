@@ -328,6 +328,8 @@ resolve_interface() {
 		}
 	fi
 
+	[ -e "/sys/class/net/$input" ] || \
+		log_msg warning "unable to resolve interface '$input', using it as device name"
 	echo "$input"
 }
 
