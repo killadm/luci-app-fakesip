@@ -1,0 +1,3 @@
+.github/workflows/*.yml text eol=lf
+luci-app-fakesip/htdocs/luci-static/resources/view/fakesip.js text eol=lf
+net/fakesip/files/usr/libexec/fakesip-update text eol=lf

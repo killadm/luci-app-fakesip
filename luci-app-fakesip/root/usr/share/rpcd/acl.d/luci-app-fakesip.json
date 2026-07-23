@@ -14,7 +14,8 @@
 		"write": {
 			"uci": [ "fakesip" ],
 			"file": {
-				"/etc/init.d/fakesip": [ "exec" ]
+				"/etc/init.d/fakesip": [ "exec" ],
+				"/usr/libexec/fakesip-update": [ "exec" ]
 			}
 		}
 	}

@@ -1,0 +1,438 @@
+#!/bin/sh
+
+NAME="fakesip-update"
+GITHUB_REPO="killadm/luci-app-fakesip"
+GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
+GITHUB_DOWNLOAD_BASE="https://github.com/${GITHUB_REPO}/releases/download"
+
+PACKAGES="fakesip luci-app-fakesip"
+TMP_DIR=""
+
+if [ -r /usr/share/libubox/jshn.sh ]; then
+	. /usr/share/libubox/jshn.sh
+else
+	echo '{"ok":false,"message":"缺少 /usr/share/libubox/jshn.sh，无法解析更新信息"}'
+	exit 1
+fi
+
+cleanup() {
+	[ -n "$TMP_DIR" ] && rm -rf "$TMP_DIR"
+}
+
+trap cleanup EXIT INT TERM
+
+lower() {
+	printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+target_slug() {
+	printf '%s' "$1" | tr '/' '-'
+}
+
+fetch_stdout() {
+	local url="$1"
+
+	if command -v uclient-fetch >/dev/null 2>&1; then
+		uclient-fetch -q -O - "$url"
+	elif command -v wget >/dev/null 2>&1; then
+		wget -qO- "$url"
+	elif command -v curl >/dev/null 2>&1; then
+		curl -fsL "$url"
+	else
+		return 1
+	fi
+}
+
+download_file() {
+	local url="$1"
+	local dest="$2"
+
+	if command -v uclient-fetch >/dev/null 2>&1; then
+		uclient-fetch -q -O "$dest" "$url"
+	elif command -v wget >/dev/null 2>&1; then
+		wget -qO "$dest" "$url"
+	elif command -v curl >/dev/null 2>&1; then
+		curl -fsL -o "$dest" "$url"
+	else
+		return 1
+	fi
+}
+
+load_system_info() {
+	DISTRIB_ID=""
+	DISTRIB_RELEASE=""
+	DISTRIB_TARGET=""
+	DISTRIB_ARCH=""
+
+	[ -r /etc/openwrt_release ] && . /etc/openwrt_release
+
+	SYS_DISTRO_NAME="${DISTRIB_ID:-OpenWrt}"
+	SYS_DISTRO="$(lower "$SYS_DISTRO_NAME")"
+	SYS_RELEASE="${DISTRIB_RELEASE:-}"
+	SYS_TARGET="${DISTRIB_TARGET:-}"
+	SYS_TARGET_SLUG="$(target_slug "$SYS_TARGET")"
+	SYS_ARCH="${DISTRIB_ARCH:-}"
+
+	if command -v apk >/dev/null 2>&1 && [ -r /lib/apk/db/installed ]; then
+		SYS_PKG_MANAGER="apk"
+		SYS_PACKAGE_FORMAT="apk"
+	elif command -v opkg >/dev/null 2>&1; then
+		SYS_PKG_MANAGER="opkg"
+		SYS_PACKAGE_FORMAT="ipk"
+	else
+		SYS_PKG_MANAGER="none"
+		SYS_PACKAGE_FORMAT=""
+	fi
+}
+
+opkg_version() {
+	opkg status "$1" 2>/dev/null | awk -F': ' '$1 == "Version" { print $2; exit }'
+}
+
+apk_version() {
+	awk -v pkg="$1" '
+		$1 == "P:" {
+			found = ($2 == pkg)
+			next
+		}
+		found && $1 == "V:" {
+			sub(/^V:[ \t]*/, "", $0)
+			print
+			exit
+		}
+		$0 == "" {
+			found = 0
+		}
+	' /lib/apk/db/installed 2>/dev/null
+}
+
+package_version() {
+	case "$SYS_PKG_MANAGER" in
+		opkg) opkg_version "$1" ;;
+		apk) apk_version "$1" ;;
+		*) echo "" ;;
+	esac
+}
+
+read_local_versions() {
+	FAKESIP_VERSION="$(package_version fakesip)"
+	LUCI_VERSION="$(package_version luci-app-fakesip)"
+
+	[ -n "$FAKESIP_VERSION" ] && FAKESIP_INSTALLED=1 || FAKESIP_INSTALLED=0
+	[ -n "$LUCI_VERSION" ] && LUCI_INSTALLED=1 || LUCI_INSTALLED=0
+}
+
+service_is_running() {
+	ubus call service list '{"name":"fakesip"}' 2>/dev/null | grep -q '"running":[[:space:]]*true'
+}
+
+stop_service_if_running() {
+	service_is_running || return 0
+	/etc/init.d/fakesip stop_now >/dev/null 2>&1
+}
+
+restart_service_if_needed() {
+	[ "${SERVICE_WAS_RUNNING:-0}" -eq 1 ] || return 0
+	/etc/init.d/fakesip start_now >/dev/null 2>&1
+}
+
+emit_package_object() {
+	local key="$1"
+	local name="$2"
+	local installed="$3"
+	local version="$4"
+
+	json_add_object "$key"
+	json_add_string name "$name"
+	json_add_boolean installed "$installed"
+	json_add_string version "$version"
+	json_close_object
+}
+
+emit_response() {
+	local ok="$1"
+	local command="$2"
+	local message="$3"
+
+	read_local_versions
+	json_init
+	json_add_boolean ok "$ok"
+	json_add_string command "$command"
+	json_add_string message "$message"
+
+	json_add_object system
+	json_add_string distro "$SYS_DISTRO"
+	json_add_string distro_name "$SYS_DISTRO_NAME"
+	json_add_string release "$SYS_RELEASE"
+	json_add_string target "$SYS_TARGET"
+	json_add_string target_slug "$SYS_TARGET_SLUG"
+	json_add_string arch "$SYS_ARCH"
+	json_add_string package_manager "$SYS_PKG_MANAGER"
+	json_add_string package_format "$SYS_PACKAGE_FORMAT"
+	json_close_object
+
+	json_add_object packages
+	emit_package_object fakesip fakesip "$FAKESIP_INSTALLED" "$FAKESIP_VERSION"
+	emit_package_object luci "luci-app-fakesip" "$LUCI_INSTALLED" "$LUCI_VERSION"
+	json_close_object
+
+	json_add_object latest
+	json_add_boolean checked "${LATEST_CHECKED:-0}"
+	json_add_boolean supported "${LATEST_SUPPORTED:-0}"
+	json_add_boolean update_available "${UPDATE_AVAILABLE:-0}"
+	json_add_string release_tag "${LATEST_TAG:-}"
+	json_add_string release_name "${LATEST_NAME:-}"
+	json_add_string release_url "${LATEST_URL:-}"
+	json_add_string manifest_url "${MANIFEST_URL:-}"
+	json_add_string package_version "${REMOTE_PACKAGE_VERSION:-}"
+	json_add_string asset_prefix "${REMOTE_ASSET_PREFIX:-}"
+	json_add_string package_format "${REMOTE_PACKAGE_FORMAT:-}"
+	json_add_string reason "${LATEST_REASON:-}"
+	json_close_object
+
+	json_add_string log "${INSTALL_LOG:-}"
+	json_dump
+	echo
+}
+
+select_matching_build() {
+	local manifest_json="$1"
+	local build_keys build_key
+	local distro version target format
+
+	REMOTE_PACKAGE_VERSION=""
+	REMOTE_ASSET_PREFIX=""
+	REMOTE_PACKAGE_FORMAT=""
+	REMOTE_FILES=""
+	LATEST_SUPPORTED=0
+	LATEST_REASON="当前系统没有匹配的发布包"
+
+	json_load "$manifest_json" || {
+		LATEST_REASON="发布 manifest 不是有效 JSON"
+		return 1
+	}
+
+	json_select builds || {
+		LATEST_REASON="发布 manifest 缺少 builds"
+		return 1
+	}
+
+	json_get_keys build_keys
+	for build_key in $build_keys; do
+		json_select "$build_key" || continue
+		json_get_var distro distro
+		json_get_var version version
+		json_get_var target target
+		json_get_var format package_format
+
+		if [ "$distro" = "$SYS_DISTRO" ] &&
+		   [ "$version" = "$SYS_RELEASE" ] &&
+		   [ "$target" = "$SYS_TARGET" ] &&
+		   [ "$format" = "$SYS_PACKAGE_FORMAT" ]; then
+			json_get_var REMOTE_PACKAGE_VERSION package_version
+			json_get_var REMOTE_ASSET_PREFIX asset_prefix
+			json_get_var REMOTE_PACKAGE_FORMAT package_format
+			json_get_values REMOTE_FILES files
+			LATEST_SUPPORTED=1
+			LATEST_REASON="找到匹配的发布包"
+			json_select ..
+			json_select ..
+			return 0
+		fi
+
+		json_select ..
+	done
+
+	json_select ..
+	return 0
+}
+
+check_latest() {
+	local release_json manifest_json
+
+	LATEST_CHECKED=1
+	LATEST_SUPPORTED=0
+	UPDATE_AVAILABLE=0
+	LATEST_TAG=""
+	LATEST_NAME=""
+	LATEST_URL=""
+	MANIFEST_URL=""
+	REMOTE_PACKAGE_VERSION=""
+	REMOTE_ASSET_PREFIX=""
+	REMOTE_PACKAGE_FORMAT=""
+	REMOTE_FILES=""
+	LATEST_REASON=""
+
+	[ -n "$SYS_RELEASE" ] && [ -n "$SYS_TARGET" ] || {
+		LATEST_REASON="无法识别当前系统版本或 target"
+		return 0
+	}
+
+	[ "$SYS_PKG_MANAGER" != "none" ] || {
+		LATEST_REASON="未找到 opkg 或 apk 包管理器"
+		return 0
+	}
+
+	release_json="$(fetch_stdout "$GITHUB_API")" || {
+		LATEST_REASON="无法访问 GitHub Releases API，可能是网络不可达或仓库还没有正式 Release"
+		return 1
+	}
+
+	json_load "$release_json" || {
+		LATEST_REASON="GitHub Releases API 返回了无效 JSON"
+		return 1
+	}
+
+	json_get_var LATEST_TAG tag_name
+	json_get_var LATEST_NAME name
+	json_get_var LATEST_URL html_url
+
+	[ -n "$LATEST_TAG" ] || {
+		LATEST_REASON="GitHub 上没有可用的正式 release"
+		return 1
+	}
+
+	MANIFEST_URL="${GITHUB_DOWNLOAD_BASE}/${LATEST_TAG}/manifest.json"
+	manifest_json="$(fetch_stdout "$MANIFEST_URL")" || {
+		LATEST_REASON="无法下载 release manifest，请确认 GitHub Release 已发布 manifest.json"
+		return 1
+	}
+
+	select_matching_build "$manifest_json" || return 1
+
+	read_local_versions
+	if [ "$LATEST_SUPPORTED" -eq 1 ] && [ -z "$REMOTE_PACKAGE_VERSION" ]; then
+		LATEST_REASON="匹配的发布包缺少包版本信息"
+		return 1
+	fi
+
+	if [ "$LATEST_SUPPORTED" -eq 1 ]; then
+		if [ "$FAKESIP_VERSION" != "$REMOTE_PACKAGE_VERSION" ] ||
+		   [ "$LUCI_VERSION" != "$REMOTE_PACKAGE_VERSION" ]; then
+			UPDATE_AVAILABLE=1
+			LATEST_REASON="发现可用更新"
+		else
+			UPDATE_AVAILABLE=0
+			LATEST_REASON="已是最新版本"
+		fi
+	fi
+
+	return 0
+}
+
+verify_downloads() {
+	local checksums="$1"
+
+	(
+		cd "$TMP_DIR" || exit 1
+		sha256sum -c "$checksums"
+	)
+}
+
+download_selected_assets() {
+	local asset url checksums
+
+	TMP_DIR="$(mktemp -d /tmp/fakesip-update.XXXXXX)" || return 1
+	checksums="${REMOTE_ASSET_PREFIX}.sha256sums.txt"
+	url="${GITHUB_DOWNLOAD_BASE}/${LATEST_TAG}/${checksums}"
+	download_file "$url" "$TMP_DIR/$checksums" || return 1
+
+	for asset in $REMOTE_FILES; do
+		url="${GITHUB_DOWNLOAD_BASE}/${LATEST_TAG}/${asset}"
+		download_file "$url" "$TMP_DIR/$asset" || return 1
+	done
+
+	verify_downloads "$checksums"
+}
+
+install_downloaded_packages() {
+	local asset files
+
+	files=""
+	for asset in $REMOTE_FILES; do
+		files="$files $TMP_DIR/$asset"
+	done
+
+	case "$SYS_PKG_MANAGER" in
+		opkg)
+			opkg install $files 2>&1
+			;;
+		apk)
+			apk add --allow-untrusted $files 2>&1
+			;;
+		*)
+			echo "unsupported package manager: $SYS_PKG_MANAGER" >&2
+			return 1
+			;;
+	esac
+}
+
+install_latest() {
+	local install_output
+
+	check_latest || return 1
+
+	if [ "$LATEST_SUPPORTED" -ne 1 ]; then
+		return 1
+	fi
+
+	if [ "$UPDATE_AVAILABLE" -ne 1 ]; then
+		return 0
+	fi
+
+	download_selected_assets || {
+		LATEST_REASON="下载或校验更新包失败"
+		return 1
+	}
+
+	service_is_running && SERVICE_WAS_RUNNING=1 || SERVICE_WAS_RUNNING=0
+	if [ "$SERVICE_WAS_RUNNING" -eq 1 ]; then
+		stop_service_if_running || {
+			LATEST_REASON="停止 FakeSIP 服务失败，未执行更新"
+			return 1
+		}
+	fi
+
+	if install_output="$(install_downloaded_packages)"; then
+		INSTALL_LOG="$install_output"
+		restart_service_if_needed || true
+		LATEST_REASON="在线更新完成"
+		check_latest >/dev/null 2>&1 || true
+		return 0
+	fi
+
+	INSTALL_LOG="$install_output"
+	restart_service_if_needed || true
+	LATEST_REASON="包管理器安装失败"
+	return 1
+}
+
+COMMAND="${1:-status}"
+load_system_info
+read_local_versions
+
+case "$COMMAND" in
+	status)
+		emit_response 1 status "已读取本机版本信息"
+		;;
+	check)
+		if check_latest; then
+			emit_response 1 check "$LATEST_REASON"
+		else
+			emit_response 0 check "$LATEST_REASON"
+			exit 1
+		fi
+		;;
+	install)
+		if install_latest; then
+			emit_response 1 install "$LATEST_REASON"
+		else
+			emit_response 0 install "$LATEST_REASON"
+			exit 1
+		fi
+		;;
+	*)
+		emit_response 0 "$COMMAND" "Usage: $0 {status|check|install}"
+		exit 1
+		;;
+esac
