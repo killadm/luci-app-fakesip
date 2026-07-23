@@ -2,6 +2,36 @@
 	margin-left: 1em;
 }
 
+.fakesip-mono {
+	font-family: monospace;
+}
+
+.fakesip-update-panel {
+	width: 100%;
+	box-sizing: border-box;
+}
+
+.fakesip-update-status-text {
+	margin-left: .75em;
+	overflow-wrap: anywhere;
+}
+
+.fakesip-update-brief-item {
+	min-width: 12em;
+	line-height: 1.6;
+}
+
+.fakesip-update-brief-label {
+	color: var(--muted-color, #666);
+	margin-right: .5em;
+}
+
+.fakesip-update-meta {
+	margin-bottom: .75em;
+	padding-top: 0;
+	overflow-wrap: anywhere;
+}
+
 .fakesip-log-panel {
 	width: 100%;
 	box-sizing: border-box;

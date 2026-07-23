@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-fakesip
-PKG_VERSION:=0.0.0+git20260722
-PKG_RELEASE:=6
+PKG_VERSION:=0.1.0
+PKG_RELEASE:=1
 
 PKG_MAINTAINER:=FakeSIP LuCI feed
 PKG_LICENSE:=GPL-3.0-or-later
