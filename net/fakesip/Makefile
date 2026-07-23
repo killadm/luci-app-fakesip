@@ -1,13 +1,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=fakesip
-PKG_VERSION:=0.0.0+git20260722
-PKG_RELEASE:=5
+PKG_VERSION:=0.1.0
+PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/killadm/FakeSIP.git
 PKG_SOURCE_DATE:=2026-07-22
-PKG_SOURCE_VERSION:=master
+PKG_SOURCE_VERSION:=54ac813f1fea709e35144239bbe42becbc1eceed
 PKG_MIRROR_HASH:=skip
 
 PKG_MAINTAINER:=FakeSIP LuCI feed
@@ -22,7 +22,7 @@ define Package/fakesip
   SUBMENU:=Firewall
   TITLE:=Disguise UDP traffic as SIP with NFQUEUE
   URL:=https://github.com/MikeWang000000/FakeSIP
-  DEPENDS:=+libpthread +libnetfilter-queue +libnfnetlink +libmnl +nftables +kmod-nfnetlink-queue +kmod-nft-queue
+  DEPENDS:=+ca-bundle +uclient-fetch +libpthread +libnetfilter-queue +libnfnetlink +libmnl +nftables +kmod-nfnetlink-queue +kmod-nft-queue
 endef
 
 define Package/fakesip/description
@@ -55,6 +55,7 @@ define Package/fakesip/install
 	$(INSTALL_DIR) $(1)/usr/libexec
 	$(INSTALL_BIN) ./files/usr/libexec/fakesip-scheduled-restart $(1)/usr/libexec/fakesip-scheduled-restart
 	$(INSTALL_BIN) ./files/usr/libexec/fakesip-logread $(1)/usr/libexec/fakesip-logread
+	$(INSTALL_BIN) ./files/usr/libexec/fakesip-update $(1)/usr/libexec/fakesip-update
 	$(INSTALL_DIR) $(1)/usr/share/fakesip
 	$(INSTALL_DATA) ./files/usr/share/fakesip/functions.sh $(1)/usr/share/fakesip/functions.sh
 endef

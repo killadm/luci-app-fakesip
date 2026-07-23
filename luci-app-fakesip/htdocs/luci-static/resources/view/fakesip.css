@@ -2,6 +2,52 @@
 	margin-left: 1em;
 }
 
+.fakesip-mono {
+	font-family: monospace;
+}
+
+.fakesip-update-panel {
+	width: 100%;
+	box-sizing: border-box;
+}
+
+.fakesip-update-summary {
+	margin-bottom: .75em;
+}
+
+.fakesip-update-message {
+	overflow-wrap: anywhere;
+}
+
+.fakesip-update-brief {
+	display: flex;
+	gap: 1.5em;
+	flex-wrap: wrap;
+	align-items: baseline;
+	margin-bottom: .25em;
+}
+
+.fakesip-update-brief-item {
+	min-width: 12em;
+	line-height: 1.6;
+}
+
+.fakesip-update-brief-label {
+	color: var(--muted-color, #666);
+	margin-right: .5em;
+}
+
+.fakesip-update-meta {
+	margin-bottom: .75em;
+	padding-top: 0;
+	overflow-wrap: anywhere;
+}
+
+.fakesip-update-description {
+	margin-top: .5em;
+	padding-top: 0;
+}
+
 .fakesip-log-panel {
 	width: 100%;
 	box-sizing: border-box;
