@@ -18,7 +18,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install build dependencies
         run: |
@@ -57,7 +57,19 @@ jobs:
         working-directory: sdk
         run: |
           set -euo pipefail
-          echo "src-link fakesip ${GITHUB_WORKSPACE}" >> feeds.conf.default
+          feed_dir="${RUNNER_TEMP:?}/fakesip-feed"
+          rm -rf "${feed_dir}"
+          mkdir -p "${feed_dir}"
+          cp -a "${GITHUB_WORKSPACE}/net" "${GITHUB_WORKSPACE}/luci-app-fakesip" "${feed_dir}/"
+
+          sed -i '/^src-.* fakesip /d' feeds.conf.default
+          echo "src-link fakesip ${feed_dir}" >> feeds.conf.default
+          awk '$1 ~ /^src-/ { print $2 }' feeds.conf.default | while read -r feed; do
+            case "${feed}" in
+              ''|*/*|*..*) continue ;;
+            esac
+            rm -rf "feeds/${feed}" "feeds/${feed}.index"
+          done
           ./scripts/feeds update -a
           for pkg in libmnl libnfnetlink libnetfilter-queue luci-base; do
             ./scripts/feeds install "${pkg}" || true
@@ -76,10 +88,24 @@ jobs:
 
       - name: Build IPK packages
         working-directory: sdk
+        shell: bash
         run: |
           set -euo pipefail
-          make package/fakesip/compile V=s -j"$(nproc)"
-          make package/luci-app-fakesip/compile V=s -j"$(nproc)"
+          mkdir -p "${GITHUB_WORKSPACE}/build-logs"
+
+          log="${GITHUB_WORKSPACE}/build-logs/build.log"
+
+          echo "::group::make package/fakesip/compile package/luci-app-fakesip/compile"
+          if make -j"$(nproc)" package/fakesip/compile package/luci-app-fakesip/compile >"${log}" 2>&1; then
+            tail -n 80 "${log}" || true
+            echo "::endgroup::"
+          else
+            rc=$?
+            echo "::error::make packages failed; full log is attached as build.log"
+            tail -n 300 "${log}" || true
+            echo "::endgroup::"
+            exit "${rc}"
+          fi
 
       - name: Collect IPK artifacts
         run: |
@@ -93,8 +119,17 @@ jobs:
           sha256sum artifacts/*.ipk > artifacts/sha256sums.txt
 
       - name: Upload IPK artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: fakesip-ipk-immortalwrt-24.10.5-mediatek-filogic
           path: artifacts/
           if-no-files-found: error
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-logs-immortalwrt-24.10.5-mediatek-filogic
+          path: build-logs/
+          if-no-files-found: ignore
+          retention-days: 7
