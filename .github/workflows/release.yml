@@ -1,0 +1,604 @@
+name: Release Packages
+
+'on':
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      openwrt_versions:
+        description: 'OpenWrt versions, comma separated'
+        required: false
+        default: '24.10.7,25.12.5'
+      immortalwrt_versions:
+        description: 'ImmortalWrt versions, comma separated'
+        required: false
+        default: '24.10.5,24.10.6'
+      targets:
+        description: 'Targets, comma separated. Empty means default matrix.'
+        required: false
+        default: ''
+      version:
+        description: 'Release version tag (e.g. v1.2.3). If set, creates an official release; leave empty for manual-N.'
+        required: false
+        default: ''
+      prerelease:
+        description: 'Mark the GitHub Release as prerelease'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  DEFAULT_OPENWRT_VERSIONS: 24.10.7,25.12.5
+  DEFAULT_IMMORTALWRT_VERSIONS: 24.10.5,24.10.6
+  DEFAULT_TARGETS: x86/64,mediatek/filogic,ramips/mt7621,ath79/generic,ipq40xx/generic,ipq806x/generic,qualcommax/ipq807x,bcm27xx/bcm2711,rockchip/armv8
+
+jobs:
+  prepare:
+    name: Prepare release matrix
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      release_name: ${{ steps.release.outputs.release_name }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+
+    steps:
+      - name: Build matrix
+        id: matrix
+        shell: bash
+        env:
+          INPUT_OPENWRT_VERSIONS: ${{ github.event_name == 'workflow_dispatch' && inputs.openwrt_versions || env.DEFAULT_OPENWRT_VERSIONS }}
+          INPUT_IMMORTALWRT_VERSIONS: ${{ github.event_name == 'workflow_dispatch' && inputs.immortalwrt_versions || env.DEFAULT_IMMORTALWRT_VERSIONS }}
+          INPUT_TARGETS: ${{ github.event_name == 'workflow_dispatch' && inputs.targets || env.DEFAULT_TARGETS }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY' > matrix.json
+          import json
+          import os
+
+          def parse_csv(value):
+              seen = set()
+              items = []
+              for raw in value.split(","):
+                  item = raw.strip()
+                  if item and item not in seen:
+                      seen.add(item)
+                      items.append(item)
+              return items
+
+          targets = parse_csv(os.environ["INPUT_TARGETS"])
+          distro_specs = [
+              {
+                  "distro": "openwrt",
+                  "distro_name": "OpenWrt",
+                  "versions": parse_csv(os.environ["INPUT_OPENWRT_VERSIONS"]),
+                  "sdk_base_url": "https://downloads.openwrt.org/releases",
+                  "sdk_prefix": "openwrt-sdk",
+              },
+              {
+                  "distro": "immortalwrt",
+                  "distro_name": "ImmortalWrt",
+                  "versions": parse_csv(os.environ["INPUT_IMMORTALWRT_VERSIONS"]),
+                  "sdk_base_url": "https://downloads.immortalwrt.org/releases",
+                  "sdk_prefix": "immortalwrt-sdk",
+              },
+          ]
+
+          if not targets:
+              raise SystemExit("No OpenWrt targets configured")
+
+          include = []
+          for spec in distro_specs:
+              for version in spec["versions"]:
+                  major = int(version.split(".", 1)[0])
+                  expected_package_format = "apk" if major >= 25 else "ipk"
+                  for target in targets:
+                      target_slug = target.replace("/", "-")
+                      asset_prefix = f"{spec['distro']}-{version}-{target_slug}"
+                      include.append({
+                          "distro": spec["distro"],
+                          "distro_name": spec["distro_name"],
+                          "version": version,
+                          "target": target,
+                          "target_slug": target_slug,
+                          "expected_package_format": expected_package_format,
+                          "sdk_base_url": spec["sdk_base_url"],
+                          "sdk_prefix": spec["sdk_prefix"],
+                          "asset_prefix": asset_prefix,
+                      })
+
+          if not include:
+              raise SystemExit("No OpenWrt or ImmortalWrt versions configured")
+
+          print(json.dumps({"include": include}, separators=(",", ":")))
+          PY
+          echo "matrix=$(cat matrix.json)" >> "${GITHUB_OUTPUT}"
+
+      - name: Resolve release metadata
+        id: release
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
+          INPUT_PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || 'false' }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            release_tag="${GITHUB_REF_NAME}"
+          elif [[ -n "${INPUT_VERSION}" ]]; then
+            release_tag="${INPUT_VERSION}"
+          else
+            release_tag="manual-${GITHUB_RUN_NUMBER}"
+          fi
+
+          prerelease="false"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            prerelease="${INPUT_PRERELEASE}"
+          fi
+          # 手动触发且未指定版本号 → 强制 prerelease，防止污染 /releases/latest
+          if [[ "${release_tag}" == manual-* ]]; then
+            prerelease="true"
+          fi
+
+          {
+            echo "release_tag=${release_tag}"
+            echo "release_name=${release_tag}"
+            echo "prerelease=${prerelease}"
+          } >> "${GITHUB_OUTPUT}"
+
+  build:
+    name: ${{ matrix.distro_name }} ${{ matrix.version }} ${{ matrix.target }}
+    runs-on: ubuntu-22.04
+    needs: prepare
+    strategy:
+      fail-fast: false
+      max-parallel: 18
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set package version from release tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          version="$(echo "${RELEASE_TAG}" | sed -E 's/^v//')"
+          if [[ "${RELEASE_TAG}" != manual-* && -n "${version}" ]]; then
+            sed -i "s/^PKG_VERSION:=.*/PKG_VERSION:=${version}/" \
+              "${GITHUB_WORKSPACE}/net/fakesip/Makefile" \
+              "${GITHUB_WORKSPACE}/luci-app-fakesip/Makefile"
+            echo "PKG_VERSION set to ${version}"
+          else
+            echo "Manual or untagged build — keeping existing PKG_VERSION"
+          fi
+
+      - name: Cache SDK
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: sdk/
+          key: sdk-${{ matrix.distro }}-${{ matrix.version }}-${{ matrix.target }}
+
+      - name: Install build dependencies
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            curl \
+            file \
+            flex \
+            gawk \
+            gcc-multilib \
+            gettext \
+            git \
+            libncurses-dev \
+            libssl-dev \
+            python3 \
+            python3-distutils \
+            python3-setuptools \
+            rsync \
+            tar \
+            unzip \
+            wget \
+            zlib1g-dev \
+            zstd
+
+      - name: Download SDK
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          DISTRO_NAME: ${{ matrix.distro_name }}
+          SDK_BASE_URL: ${{ matrix.sdk_base_url }}
+          SDK_PREFIX: ${{ matrix.sdk_prefix }}
+          RELEASE_VERSION: ${{ matrix.version }}
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+
+          sdk_base_url="${SDK_BASE_URL}/${RELEASE_VERSION}/targets/${RELEASE_TARGET}"
+          curl -fL --retry 5 --retry-delay 5 -o sha256sums "${sdk_base_url}/sha256sums"
+
+          sdk_file="$(
+            awk -v prefix="${SDK_PREFIX}" '
+              BEGIN { pattern = "^\\*?" prefix "-.*Linux-x86_64\\.tar\\.(xz|zst)$" }
+              $2 ~ pattern { sub(/^\*/, "", $2); print $2; exit }
+            ' sha256sums
+          )"
+          if [[ -z "${sdk_file}" ]]; then
+            echo "::error::No ${DISTRO_NAME} SDK tarball found in ${sdk_base_url}/sha256sums"
+            awk '$2 ~ /sdk/ { print $2 }' sha256sums || true
+            exit 1
+          fi
+
+          curl -fL --retry 5 --retry-delay 5 -O "${sdk_base_url}/${sdk_file}"
+          sha256sum -c --ignore-missing sha256sums
+
+          mkdir sdk
+          case "${sdk_file}" in
+            *.tar.zst)
+              tar --zstd -xf "${sdk_file}" -C sdk --strip-components=1
+              ;;
+            *.tar.xz)
+              tar -Jxf "${sdk_file}" -C sdk --strip-components=1
+              ;;
+            *)
+              echo "::error::Unsupported SDK archive format: ${sdk_file}"
+              exit 1
+              ;;
+          esac
+
+      - name: Add local feed
+        working-directory: sdk
+        run: |
+          set -euo pipefail
+          echo "src-link fakesip ${GITHUB_WORKSPACE}" >> feeds.conf.default
+          ./scripts/feeds update -a
+
+          for pkg in libmnl libnfnetlink libnetfilter-queue luci-base; do
+            ./scripts/feeds install "${pkg}" || true
+          done
+          ./scripts/feeds install -p fakesip fakesip luci-app-fakesip
+
+      - name: Configure packages
+        working-directory: sdk
+        run: |
+          set -euo pipefail
+          cat > .config <<'EOF'
+          CONFIG_PACKAGE_fakesip=m
+          CONFIG_PACKAGE_luci-app-fakesip=m
+          EOF
+          make defconfig
+
+      - name: Build packages
+        working-directory: sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${GITHUB_WORKSPACE}/build-logs"
+
+          log="${GITHUB_WORKSPACE}/build-logs/build.log"
+
+          echo "::group::make package/fakesip/compile package/luci-app-fakesip/compile"
+          if make -j"$(nproc)" package/fakesip/compile package/luci-app-fakesip/compile >"${log}" 2>&1; then
+            tail -n 80 "${log}" || true
+            echo "::endgroup::"
+          else
+            rc=$?
+            echo "::error::make packages failed; full log is attached as build.log"
+            tail -n 300 "${log}" || true
+            echo "::endgroup::"
+            exit "${rc}"
+          fi
+
+      - name: Collect release assets
+        shell: bash
+        env:
+          DISTRO: ${{ matrix.distro }}
+          DISTRO_NAME: ${{ matrix.distro_name }}
+          RELEASE_VERSION: ${{ matrix.version }}
+          RELEASE_TARGET: ${{ matrix.target }}
+          TARGET_SLUG: ${{ matrix.target_slug }}
+          EXPECTED_PACKAGE_FORMAT: ${{ matrix.expected_package_format }}
+          ASSET_PREFIX: ${{ matrix.asset_prefix }}
+        run: |
+          set -euo pipefail
+
+          bundle="${ASSET_PREFIX}"
+          mkdir -p "dist/${bundle}" release-assets
+
+          mapfile -t packages < <(
+            find sdk/bin/packages -type f \( \
+              -name 'fakesip_*.ipk' -o \
+              -name 'luci-app-fakesip_*.ipk' -o \
+              -name 'fakesip*.apk' -o \
+              -name 'luci-app-fakesip*.apk' \
+            \) | sort
+          )
+
+          if [[ "${#packages[@]}" -eq 0 ]]; then
+            echo "::error::No fakesip package files were produced"
+            find sdk/bin/packages -type f | sort || true
+            exit 1
+          fi
+
+          for package in "${packages[@]}"; do
+            base="$(basename "${package}")"
+            cp -v "${package}" "dist/${bundle}/${base}"
+          done
+
+          tar -C dist -czf "release-assets/${bundle}.tar.gz" "${bundle}"
+
+          python3 <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          def extract_package_version(filename):
+              if filename.startswith("luci-app-fakesip_") and filename.endswith("_all.ipk"):
+                  return filename[len("luci-app-fakesip_"):-len("_all.ipk")]
+              if filename.startswith("luci-app-fakesip-") and filename.endswith(".apk"):
+                  return filename[len("luci-app-fakesip-"):-len(".apk")]
+              if filename.startswith("fakesip_") and filename.endswith(".ipk"):
+                  return filename[len("fakesip_"):-len(".ipk")].split("_", 1)[0]
+              if filename.startswith("fakesip-") and filename.endswith(".apk"):
+                  return filename[len("fakesip-"):-len(".apk")]
+              return ""
+
+          def is_fakesip_package(filename):
+              return filename.startswith("fakesip_") or filename.startswith("fakesip-")
+
+          def is_luci_package(filename):
+              return filename.startswith("luci-app-fakesip_") or filename.startswith("luci-app-fakesip-")
+
+          bundle = os.environ["ASSET_PREFIX"]
+          dist_dir = Path("dist") / bundle
+          release_dir = Path("release-assets")
+          package_version = ""
+          package_names = sorted(
+              path.name for path in dist_dir.iterdir()
+              if path.is_file() and path.suffix in (".ipk", ".apk")
+          )
+
+          if not any(is_fakesip_package(name) for name in package_names):
+              raise SystemExit("Missing fakesip package in release assets")
+          if not any(is_luci_package(name) for name in package_names):
+              raise SystemExit("Missing luci-app-fakesip package in release assets")
+
+          formats = sorted({Path(name).suffix[1:] for name in package_names})
+          if len(formats) != 1:
+              raise SystemExit(f"Expected one package format, found: {', '.join(formats)}")
+
+          package_format = formats[0]
+          expected_package_format = os.environ.get("EXPECTED_PACKAGE_FORMAT", "")
+          if expected_package_format and expected_package_format != package_format:
+              print(
+                  f"::warning::Expected {expected_package_format} packages, "
+                  f"but SDK produced {package_format}"
+              )
+
+          package_files = list(package_names)
+
+          for name in package_names:
+              if is_luci_package(name):
+                  package_version = extract_package_version(name)
+                  break
+
+          if not package_version:
+              for name in package_names:
+                  package_version = extract_package_version(name)
+                  if package_version:
+                      break
+
+          if not package_version:
+              raise SystemExit("Unable to determine package version")
+
+          manifest = {
+              "schema": 1,
+              "distro": os.environ["DISTRO"],
+              "distro_name": os.environ["DISTRO_NAME"],
+              "version": os.environ["RELEASE_VERSION"],
+              "target": os.environ["RELEASE_TARGET"],
+              "target_slug": os.environ["TARGET_SLUG"],
+              "package_format": package_format,
+              "package_version": package_version,
+              "asset_prefix": bundle,
+              "bundle": f"{bundle}.tar.gz",
+              "files": package_files,
+          }
+
+          with (release_dir / f"{bundle}.manifest.json").open("w", encoding="utf-8") as handle:
+              json.dump(manifest, handle, indent=2, sort_keys=True)
+              handle.write("\n")
+          PY
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: fakesip-${{ matrix.distro }}-${{ matrix.version }}-${{ matrix.target_slug }}
+          path: release-assets/
+          if-no-files-found: error
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-logs-${{ matrix.distro }}-${{ matrix.version }}-${{ matrix.target_slug }}
+          path: build-logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-22.04
+    needs:
+      - prepare
+      - build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create release manifest
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          def sha256(path):
+              digest = hashlib.sha256()
+              with path.open("rb") as handle:
+                  for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              return digest.hexdigest()
+
+          root = Path("release-assets")
+          builds = []
+          for manifest_path in sorted(root.glob("*.manifest.json")):
+              with manifest_path.open(encoding="utf-8") as handle:
+                  builds.append(json.load(handle))
+
+          assets = []
+          for path in sorted(root.iterdir()):
+              if not path.is_file() or path.name == "manifest.json":
+                  continue
+              assets.append({
+                  "file": path.name,
+                  "sha256": sha256(path),
+                  "size": path.stat().st_size,
+              })
+
+          manifest = {
+              "schema": 1,
+              "repo": "killadm/luci-app-fakesip",
+              "release_tag": os.environ["RELEASE_TAG"],
+              "release_name": os.environ["RELEASE_NAME"],
+              "release_url": f"https://github.com/killadm/luci-app-fakesip/releases/tag/{os.environ['RELEASE_TAG']}",
+              "builds": builds,
+              "assets": assets,
+          }
+
+          with (root / "manifest.json").open("w", encoding="utf-8") as handle:
+              json.dump(manifest, handle, indent=2, sort_keys=True)
+              handle.write("\n")
+
+          # Clean up per-build manifest files before generating top-level checksums
+          for manifest_path in sorted(root.glob("*.manifest.json")):
+              if manifest_path.name != "manifest.json":
+                  manifest_path.unlink()
+          PY
+
+          (
+            cd release-assets
+            tmp_sha="$(mktemp)"
+            find . -maxdepth 1 -type f ! -name 'sha256sums.txt' -print0 | \
+              sort -z | \
+              xargs -0 sha256sum > "${tmp_sha}"
+            mv "${tmp_sha}" sha256sums.txt
+          )
+
+      - name: Create release notes
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY' > release-notes.md
+          import json
+          import os
+          from pathlib import Path
+
+          with Path("release-assets/manifest.json").open(encoding="utf-8") as handle:
+              manifest = json.load(handle)
+
+          distro_versions = {}
+          for item in manifest["builds"]:
+              distro_versions.setdefault(item["distro_name"], set()).add(item["version"])
+
+          targets = sorted({item["target"] for item in manifest["builds"]})
+          formats = sorted({item["package_format"] for item in manifest["builds"]})
+
+          print(f"# {os.environ['RELEASE_NAME']}")
+          print()
+          print("FakeSIP OpenWrt / ImmortalWrt package release.")
+          print()
+          for distro in sorted(distro_versions):
+              print(f"- {distro}: {', '.join(sorted(distro_versions[distro]))}")
+          print(f"- Targets: {', '.join(targets)}")
+          print(f"- Formats: {', '.join(formats)}")
+          print()
+          print("Each target bundle contains the fakesip and luci-app-fakesip packages.")
+          print("The top-level manifest.json and sha256sums.txt cover all uploaded Release assets.")
+          PY
+
+          # Append changelog from git history
+          prev_tag="$(git tag --sort=-creatordate | grep -v '^manual-' | grep -B1 "^${RELEASE_TAG}$" | head -1)"
+          if [ "${prev_tag}" = "${RELEASE_TAG}" ]; then prev_tag=""; fi
+          if [ -n "${prev_tag}" ]; then
+            {
+              echo ""
+              echo "## Changelog"
+              echo ""
+              git log "${prev_tag}..HEAD" --pretty="format:- %s" --reverse
+              echo ""
+            } >> release-notes.md
+          fi
+
+      - name: Upload GitHub Release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          prerelease_args=()
+          if [[ "${PRERELEASE}" == "true" ]]; then
+            prerelease_args+=(--prerelease)
+          fi
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" \
+              release-assets/*.tar.gz \
+              release-assets/manifest.json \
+              release-assets/sha256sums.txt \
+              --clobber
+            gh release edit "${RELEASE_TAG}" --title "${RELEASE_NAME}" --notes-file release-notes.md "${prerelease_args[@]}"
+          else
+            gh release create "${RELEASE_TAG}" \
+              release-assets/*.tar.gz \
+              release-assets/manifest.json \
+              release-assets/sha256sums.txt \
+              --title "${RELEASE_NAME}" \
+              --notes-file release-notes.md \
+              --target "${GITHUB_SHA}" \
+              "${prerelease_args[@]}"
+          fi
