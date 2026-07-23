@@ -224,6 +224,44 @@ function validateLogMaxSize(sectionId, value) {
 	return true;
 }
 
+function renderFilterOrderHelp() {
+	return E('div', { 'class': 'fakesip-filter-help' }, [
+		E('ul', {}, [
+			E('li', {}, [ '只有黑名单：默认都处理，命中 ', E('code', {}, [ 'deny' ]), ' 的不处理。' ]),
+			E('li', {}, [ '只有 IP 白名单：只处理源 IP 或目的 IP 命中的流量。' ]),
+			E('li', {}, [ '只有端口白名单：只处理源端口或目的端口命中的流量。' ]),
+			E('li', {}, [ '同时有 IP 白名单和端口白名单：必须 IP 命中且端口命中才处理。' ]),
+			E('li', {}, [ '同时命中 ', E('code', {}, [ 'allow' ]), ' 和 ', E('code', {}, [ 'deny' ]), '：按 ', E('code', {}, [ 'deny' ]), ' 处理，不生成 FakeSIP 混淆包。' ])
+		])
+	]);
+}
+
+function confirmSilentDisabledSave() {
+	return new Promise(function(resolve) {
+		ui.showModal('确认关闭静默模式', [
+			E('p', {}, [ '关闭静默模式会逐包输出日志，可能快速增加日志量。除排查问题时外，日常使用建议开启。' ]),
+			E('div', { 'class': 'button-row' }, [
+				E('button', {
+					'class': 'btn cbi-button',
+					'type': 'button',
+					'click': function() {
+						ui.hideModal();
+						resolve(false);
+					}
+				}, [ '取消' ]), ' ',
+				E('button', {
+					'class': 'btn cbi-button cbi-button-negative important',
+					'type': 'button',
+					'click': function() {
+						ui.hideModal();
+						resolve(true);
+					}
+				}, [ '确认保存' ])
+			])
+		], 'cbi-modal');
+	});
+}
+
 function isValidIPv4(value) {
 	var parts = String(value || '').split('.');
 
@@ -411,6 +449,9 @@ function renderActionGroup(actions, footer) {
 }
 
 return view.extend({
+	map: null,
+	silentOpt: null,
+
 	load: function() {
 		loadStylesheet();
 
@@ -424,6 +465,34 @@ return view.extend({
 		});
 	},
 
+	confirmSave: function() {
+		if (!this.silentOpt || this.silentOpt.formvalue('main') === '1')
+			return Promise.resolve(true);
+
+		return confirmSilentDisabledSave();
+	},
+
+	handleSave: function(ev) {
+		return this.confirmSave().then(L.bind(function(confirmed) {
+			if (!confirmed)
+				return false;
+
+			if (!this.map)
+				return false;
+
+			return this.map.save().then(function() {
+				return true;
+			});
+		}, this));
+	},
+
+	handleSaveApply: function(ev, mode) {
+		return this.handleSave(ev).then(function(saved) {
+			if (saved)
+				return ui.changes.apply(mode == '0');
+		});
+	},
+
 	render: function(data) {
 		var services = data[0];
 		var serviceEnabled = uci.get('fakesip', 'main', 'enabled') === '1';
@@ -431,7 +500,7 @@ return view.extend({
 		var crontab = data[1] || '';
 		var logOutput = data[2] && data[2].stdout ? data[2].stdout : '';
 		var fileLog = data[3] && data[3].stdout ? data[3].stdout : '';
-		var m, s, o, p, f, enabledOpt, ifaceModeOpt, noHop, payloadTypeOpt, filterTypeOpt;
+		var m, s, o, p, f, enabledOpt, ifaceModeOpt, noHop, payloadTypeOpt, filterTypeOpt, silentOpt;
 
 		m = new form.Map('fakesip', 'FakeSIP');
 
@@ -506,7 +575,7 @@ return view.extend({
 		o.default = 'both';
 		o.rmempty = false;
 
-		o = s.taboption('advanced', form.Value, 'queue_num', '队列编号');
+		o = s.taboption('advanced', form.Value, 'queue_num', 'NFQUEUE 编号');
 		o.default = '513';
 		o.rmempty = false;
 		o.validate = validateRange(1, 4294967295, '请输入 1 到 4294967295 之间的数值', false);
@@ -551,9 +620,11 @@ return view.extend({
 
 		o = s.taboption('advanced', form.Flag, 'skip_firewall', '跳过防火墙规则');
 		o.rmempty = false;
+		o.description = '慎选，除非必须自己维护外部防火墙规则，否则建议保持关闭。';
 
 		o = s.taboption('advanced', form.Flag, 'use_iptables', '使用 iptables 兼容模式');
 		o.rmempty = false;
+		o.description = '慎选，建议优先使用 nftables；仅在确有兼容需求时开启。';
 
 		o = s.taboption('advanced', form.Value, 'log_file', '日志文件');
 		o.default = '/var/log/fakesip/fakesip.log';
@@ -617,9 +688,11 @@ return view.extend({
 			return '<div class="cbi-value-field">' + escapeHTML(getScheduleText(crontab)) + '</div>';
 		};
 
-		o = s.taboption('logs', form.Flag, 'silent', '静默模式');
-		o.rmempty = false;
-		o.description = '启用后仅保留错误等关键输出，减少连接处理明细日志；排查问题时建议关闭。';
+		silentOpt = s.taboption('logs', form.Flag, 'silent', '静默模式');
+		silentOpt.default = '1';
+		silentOpt.rmempty = false;
+		silentOpt.description = '关闭会逐包输出日志，除排查问题时外，日常使用建议开启。';
+		this.silentOpt = silentOpt;
 
 		o = s.taboption('logs', form.DummyValue, '_logs');
 		o.render = function() {
@@ -680,6 +753,13 @@ return view.extend({
 		f.anonymous = true;
 		f.addremove = true;
 		f.addbtntitle = '添加规则';
+		f.description = renderFilterOrderHelp();
+
+		o = f.option(form.DummyValue, '_filter_order', '匹配顺序');
+		o.modalonly = true;
+		o.renderWidget = function() {
+			return renderFilterOrderHelp();
+		};
 
 		o = f.option(form.ListValue, 'action', '动作');
 		o.value('allow', '白名单');
@@ -700,6 +780,8 @@ return view.extend({
 		o.placeholder = '1.2.3.4/24、2001:db8::/32 或 5000-6000';
 		o.rmempty = false;
 		o.validate = validateFilterValue(filterTypeOpt);
+
+		this.map = m;
 
 		return m.render();
 	}
