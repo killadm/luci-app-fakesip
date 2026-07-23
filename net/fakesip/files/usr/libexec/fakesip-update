@@ -1,0 +1,1076 @@
+#!/bin/sh
+
+NAME="fakesip-update"
+GITHUB_REPO="killadm/luci-app-fakesip"
+GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
+GITHUB_RELEASES_API="https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=20"
+GITHUB_DOWNLOAD_BASE="https://github.com/${GITHUB_REPO}/releases/download"
+
+PACKAGES="fakesip luci-app-fakesip"
+TMP_DIR=""
+PROGRESS_DIR="/tmp/fakesip-update"
+PROGRESS_LOG="${PROGRESS_DIR}/install.log"
+LOCK_DIR="/tmp/fakesip-update.lock"
+PROGRESS_ENABLED=0
+
+if [ -r /usr/share/libubox/jshn.sh ]; then
+	. /usr/share/libubox/jshn.sh
+else
+	echo '{"ok":false,"message":"缺少 /usr/share/libubox/jshn.sh，无法解析更新信息"}'
+	exit 1
+fi
+
+cleanup() {
+	[ -n "$TMP_DIR" ] && rm -rf "$TMP_DIR"
+}
+
+trap cleanup EXIT INT TERM
+
+lower() {
+	printf '%s' "$1" | tr 'A-Z' 'a-z'
+}
+
+target_slug() {
+	printf '%s' "$1" | tr '/' '-'
+}
+
+now_ts() {
+	date +%s 2>/dev/null || date
+}
+
+progress_mkdir() {
+	mkdir -p "$PROGRESS_DIR" 2>/dev/null
+}
+
+progress_write() {
+	local name="$1"
+	local value="$2"
+	local file="${PROGRESS_DIR}/${name}"
+
+	progress_mkdir || return 1
+	printf '%s\n' "$value" > "${file}.$$" && mv "${file}.$$" "$file"
+}
+
+progress_read() {
+	local name="$1"
+	local default="$2"
+	local file="${PROGRESS_DIR}/${name}"
+
+	if [ -r "$file" ]; then
+		sed -n '1p' "$file" 2>/dev/null
+		return
+	fi
+
+	printf '%s' "$default"
+}
+
+progress_tail_log() {
+	local count="${1:-160}"
+
+	[ -r "$PROGRESS_LOG" ] && tail -n "$count" "$PROGRESS_LOG" 2>/dev/null
+}
+
+progress_log() {
+	[ "${PROGRESS_ENABLED:-0}" -eq 1 ] || return 0
+	progress_mkdir || return 0
+	printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date)" "$*" >> "$PROGRESS_LOG"
+}
+
+progress_update() {
+	local stage="$1"
+	local message="$2"
+
+	[ "${PROGRESS_ENABLED:-0}" -eq 1 ] || return 0
+	progress_write stage "$stage"
+	progress_write message "$message"
+	progress_log "$message"
+}
+
+progress_finish() {
+	local ok="$1"
+	local exit_code="$2"
+	local stage="$3"
+	local message="$4"
+
+	progress_write stage "$stage"
+	progress_write message "$message"
+	progress_write ok "$ok"
+	progress_write exit_code "$exit_code"
+	progress_write finished_at "$(now_ts)"
+	progress_log "$message"
+	progress_write running 0
+}
+
+progress_reset() {
+	local started_at
+
+	progress_mkdir || return 1
+	: > "$PROGRESS_LOG"
+	started_at="$(now_ts)"
+	progress_write running 1
+	progress_write stage starting
+	progress_write message "正在准备在线更新"
+	progress_write ok 0
+	progress_write exit_code ""
+	progress_write started_at "$started_at"
+	progress_write finished_at ""
+	progress_write pid ""
+	printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date)" "正在准备在线更新" >> "$PROGRESS_LOG"
+}
+
+progress_pid_running() {
+	local pid
+
+	pid="$(progress_read pid "")"
+	case "$pid" in
+		''|*[!0-9]*) return 1 ;;
+	esac
+
+	[ -d "/proc/$pid" ]
+}
+
+release_update_lock() {
+	rmdir "$LOCK_DIR" 2>/dev/null || true
+}
+
+acquire_update_lock() {
+	if mkdir "$LOCK_DIR" 2>/dev/null; then
+		return 0
+	fi
+
+	if ! progress_pid_running; then
+		rmdir "$LOCK_DIR" 2>/dev/null || true
+		mkdir "$LOCK_DIR" 2>/dev/null && return 0
+	fi
+
+	return 1
+}
+
+progress_normalize() {
+	local running started_at now age
+	local finished_at
+
+	running="$(progress_read running 0)"
+	finished_at="$(progress_read finished_at "")"
+	if [ "$running" = "1" ] && [ -z "$finished_at" ] && ! progress_pid_running; then
+		started_at="$(progress_read started_at "")"
+		now="$(now_ts)"
+		case "$started_at:$now" in
+			[0-9]*:[0-9]*)
+				age=$((now - started_at))
+				[ "$age" -lt 5 ] && return 0
+				;;
+		esac
+		progress_finish 0 1 failed "升级进程已退出，未写入完成状态"
+		release_update_lock
+	fi
+}
+
+emit_progress_response() {
+	local ok="$1"
+	local command="$2"
+	local message="$3"
+	local running stage progress_message progress_ok exit_code started_at finished_at log
+
+	progress_normalize
+	running="$(progress_read running 0)"
+	stage="$(progress_read stage idle)"
+	progress_message="$(progress_read message "")"
+	progress_ok="$(progress_read ok 0)"
+	exit_code="$(progress_read exit_code "")"
+	started_at="$(progress_read started_at "")"
+	finished_at="$(progress_read finished_at "")"
+	log="$(progress_tail_log 160)"
+	[ -n "$message" ] || message="$progress_message"
+
+	json_init
+	json_add_boolean ok "$ok"
+	json_add_string command "$command"
+	json_add_string message "$message"
+	json_add_object progress
+	json_add_boolean running "$running"
+	json_add_string stage "$stage"
+	json_add_string message "$progress_message"
+	json_add_boolean ok "$progress_ok"
+	json_add_string exit_code "$exit_code"
+	json_add_string started_at "$started_at"
+	json_add_string finished_at "$finished_at"
+	json_add_string log "$log"
+	json_close_object
+	json_dump
+	echo
+}
+
+fetch_stdout() {
+	local url="$1" max="${2:-3}" delay="${3:-2}" attempt=1
+
+	while [ "$attempt" -le "$max" ]; do
+		if command -v uclient-fetch >/dev/null 2>&1; then
+			uclient-fetch -q -O - "$url" 2>/dev/null && return 0
+		elif command -v wget >/dev/null 2>&1; then
+			wget -qO- "$url" 2>/dev/null && return 0
+		elif command -v curl >/dev/null 2>&1; then
+			curl -fsL "$url" 2>/dev/null && return 0
+		else
+			return 1
+		fi
+		attempt=$((attempt + 1))
+		[ "$attempt" -le "$max" ] && sleep "$delay"
+	done
+	return 1
+}
+
+download_file() {
+	local url="$1" dest="$2" max="${3:-3}" delay="${4:-2}" attempt=1
+
+	while [ "$attempt" -le "$max" ]; do
+		if command -v uclient-fetch >/dev/null 2>&1; then
+			uclient-fetch -q -O "$dest" "$url" 2>/dev/null && return 0
+		elif command -v wget >/dev/null 2>&1; then
+			wget -qO "$dest" "$url" 2>/dev/null && return 0
+		elif command -v curl >/dev/null 2>&1; then
+			curl -fsL -o "$dest" "$url" 2>/dev/null && return 0
+		else
+			return 1
+		fi
+		attempt=$((attempt + 1))
+		[ "$attempt" -le "$max" ] && sleep "$delay"
+	done
+	return 1
+}
+
+load_system_info() {
+	DISTRIB_ID=""
+	DISTRIB_RELEASE=""
+	DISTRIB_TARGET=""
+	DISTRIB_ARCH=""
+
+	[ -r /etc/openwrt_release ] && . /etc/openwrt_release
+
+	SYS_DISTRO_NAME="${DISTRIB_ID:-OpenWrt}"
+	SYS_DISTRO="$(lower "$SYS_DISTRO_NAME")"
+	SYS_RELEASE="${DISTRIB_RELEASE:-}"
+	SYS_TARGET="${DISTRIB_TARGET:-}"
+	SYS_TARGET_SLUG="$(target_slug "$SYS_TARGET")"
+	SYS_ARCH="${DISTRIB_ARCH:-}"
+
+	if command -v apk >/dev/null 2>&1 && [ -r /lib/apk/db/installed ]; then
+		SYS_PKG_MANAGER="apk"
+		SYS_PACKAGE_FORMAT="apk"
+	elif command -v opkg >/dev/null 2>&1; then
+		SYS_PKG_MANAGER="opkg"
+		SYS_PACKAGE_FORMAT="ipk"
+	else
+		SYS_PKG_MANAGER="none"
+		SYS_PACKAGE_FORMAT=""
+	fi
+}
+
+opkg_version() {
+	opkg status "$1" 2>/dev/null | awk -F': ' '$1 == "Version" { print $2; exit }'
+}
+
+apk_version() {
+	awk -v pkg="$1" '
+		$1 == "P:" {
+			found = ($2 == pkg)
+			next
+		}
+		found && $1 == "V:" {
+			sub(/^V:[ \t]*/, "", $0)
+			print
+			exit
+		}
+		$0 == "" {
+			found = 0
+		}
+	' /lib/apk/db/installed 2>/dev/null
+}
+
+package_version() {
+	case "$SYS_PKG_MANAGER" in
+		opkg) opkg_version "$1" ;;
+		apk) apk_version "$1" ;;
+		*) echo "" ;;
+	esac
+}
+
+opkg_arch() {
+	opkg status "$1" 2>/dev/null | awk -F': ' '$1 == "Architecture" { print $2; exit }'
+}
+
+apk_arch() {
+	awk -v pkg="$1" '
+		$1 == "P:" {
+			found = ($2 == pkg)
+			next
+		}
+		found && $1 == "A:" {
+			sub(/^A:[ \t]*/, "", $0)
+			print
+			exit
+		}
+		$0 == "" {
+			found = 0
+		}
+	' /lib/apk/db/installed 2>/dev/null
+}
+
+package_arch() {
+	case "$SYS_PKG_MANAGER" in
+		opkg) opkg_arch "$1" ;;
+		apk) apk_arch "$1" ;;
+		*) echo "" ;;
+	esac
+}
+
+version_compare() {
+	local left="$1"
+	local op="$2"
+	local right="$3"
+	local apk_result
+	local opkg_op
+
+	case "$op" in
+		'=') [ "$left" = "$right" ] && return 0 ;;
+		'>'|'<') [ "$left" = "$right" ] && return 1 ;;
+	esac
+
+	case "$SYS_PKG_MANAGER" in
+		opkg)
+			case "$op" in
+				'>') opkg_op='>>' ;;
+				'<') opkg_op='<<' ;;
+				'=') opkg_op='=' ;;
+				*) return 1 ;;
+			esac
+			opkg compare-versions "$left" "$opkg_op" "$right" >/dev/null 2>&1
+			return $?
+			;;
+		apk)
+			case "$op" in
+				'>') apk version --test "$left" gt "$right" >/dev/null 2>&1 && return 0 ;;
+				'<') apk version --test "$left" lt "$right" >/dev/null 2>&1 && return 0 ;;
+				'=') apk version --test "$left" eq "$right" >/dev/null 2>&1 && return 0 ;;
+			esac
+
+			apk_result="$(apk version -t "$left" "$right" 2>/dev/null)"
+			case "$op:$apk_result" in
+				'>:>'|'<:<'|'=:='|'>:1'|'<:-1'|'=:0') return 0 ;;
+			esac
+			;;
+	esac
+
+	case "$op" in
+		'=') [ "$left" = "$right" ] && return 0 ;;
+		'>')
+			if command -v sort >/dev/null 2>&1 &&
+			   printf '%s\n%s\n' "$right" "$left" | sort -V >/dev/null 2>&1; then
+				[ "$(printf '%s\n%s\n' "$right" "$left" | sort -V | tail -n 1)" = "$left" ] &&
+					[ "$left" != "$right" ] && return 0
+			fi
+			;;
+		'<')
+			if command -v sort >/dev/null 2>&1 &&
+			   printf '%s\n%s\n' "$left" "$right" | sort -V >/dev/null 2>&1; then
+				[ "$(printf '%s\n%s\n' "$left" "$right" | sort -V | head -n 1)" = "$left" ] &&
+					[ "$left" != "$right" ] && return 0
+			fi
+			;;
+	esac
+
+	return 1
+}
+
+remote_version_relation() {
+	local local_version="$1"
+
+	[ -n "$local_version" ] || {
+		echo missing
+		return 0
+	}
+
+	if [ "$REMOTE_PACKAGE_VERSION" = "$local_version" ]; then
+		echo same
+		return 0
+	fi
+
+	if version_compare "$REMOTE_PACKAGE_VERSION" '>' "$local_version"; then
+		echo newer
+	elif version_compare "$REMOTE_PACKAGE_VERSION" '<' "$local_version"; then
+		echo older
+	else
+		echo same
+	fi
+}
+
+read_local_versions() {
+	FAKESIP_VERSION="$(package_version fakesip)"
+	LUCI_VERSION="$(package_version luci-app-fakesip)"
+
+	[ -n "$FAKESIP_VERSION" ] && FAKESIP_INSTALLED=1 || FAKESIP_INSTALLED=0
+	[ -n "$LUCI_VERSION" ] && LUCI_INSTALLED=1 || LUCI_INSTALLED=0
+}
+
+service_is_running() {
+	ubus call service list '{"name":"fakesip"}' 2>/dev/null | grep -q '"running":[[:space:]]*true'
+}
+
+stop_service_if_running() {
+	service_is_running || return 0
+	/etc/init.d/fakesip stop_now >/dev/null 2>&1
+}
+
+restart_service_if_needed() {
+	[ "${SERVICE_WAS_RUNNING:-0}" -eq 1 ] || return 0
+	/etc/init.d/fakesip start_now >/dev/null 2>&1
+}
+
+emit_package_object() {
+	local key="$1"
+	local name="$2"
+	local installed="$3"
+	local version="$4"
+
+	json_add_object "$key"
+	json_add_string name "$name"
+	json_add_boolean installed "$installed"
+	json_add_string version "$version"
+	json_close_object
+}
+
+emit_response() {
+	local ok="$1"
+	local command="$2"
+	local message="$3"
+
+	json_init
+	json_add_boolean ok "$ok"
+	json_add_string command "$command"
+	json_add_string message "$message"
+
+	json_add_object system
+	json_add_string distro "$SYS_DISTRO"
+	json_add_string distro_name "$SYS_DISTRO_NAME"
+	json_add_string release "$SYS_RELEASE"
+	json_add_string target "$SYS_TARGET"
+	json_add_string target_slug "$SYS_TARGET_SLUG"
+	json_add_string arch "$SYS_ARCH"
+	json_add_string package_manager "$SYS_PKG_MANAGER"
+	json_add_string package_format "$SYS_PACKAGE_FORMAT"
+	json_close_object
+
+	json_add_object packages
+	emit_package_object fakesip fakesip "$FAKESIP_INSTALLED" "$FAKESIP_VERSION"
+	emit_package_object luci "luci-app-fakesip" "$LUCI_INSTALLED" "$LUCI_VERSION"
+	json_close_object
+
+	json_add_object latest
+	json_add_boolean checked "${LATEST_CHECKED:-0}"
+	json_add_boolean supported "${LATEST_SUPPORTED:-0}"
+	json_add_boolean update_available "${UPDATE_AVAILABLE:-0}"
+	json_add_boolean release_available "${LATEST_RELEASE_AVAILABLE:-0}"
+	json_add_string release_tag "${LATEST_TAG:-}"
+	json_add_string release_name "${LATEST_NAME:-}"
+	json_add_string release_url "${LATEST_URL:-}"
+	json_add_string manifest_url "${MANIFEST_URL:-}"
+	json_add_string package_version "${REMOTE_PACKAGE_VERSION:-}"
+	json_add_string asset_prefix "${REMOTE_ASSET_PREFIX:-}"
+	json_add_string package_format "${REMOTE_PACKAGE_FORMAT:-}"
+	json_add_string reason "${LATEST_REASON:-}"
+	json_close_object
+
+	json_add_string log "${INSTALL_LOG:-}"
+	json_dump
+	echo
+}
+
+is_json_true() {
+	case "$1" in
+		1|true|TRUE) return 0 ;;
+	esac
+
+	return 1
+}
+
+reset_release_metadata() {
+	LATEST_RELEASE_AVAILABLE=0
+	LATEST_TAG=""
+	LATEST_NAME=""
+	LATEST_URL=""
+	MANIFEST_URL=""
+}
+
+load_release_metadata() {
+	json_get_var LATEST_TAG tag_name
+	[ -n "$LATEST_TAG" ] || return 1
+
+	json_get_var LATEST_NAME name
+	json_get_var LATEST_URL html_url
+	LATEST_RELEASE_AVAILABLE=1
+	return 0
+}
+
+try_selected_release_manifest() {
+	[ -n "$LATEST_TAG" ] || return 1
+
+	MANIFEST_URL="${GITHUB_DOWNLOAD_BASE}/${LATEST_TAG}/manifest.json"
+	RELEASE_MANIFEST_JSON="$(fetch_stdout "$MANIFEST_URL")" || return 1
+	return 0
+}
+
+load_latest_release() {
+	local release_json api_message
+
+	release_json="$(fetch_stdout "$GITHUB_API")" || return 1
+
+	json_load "$release_json" || {
+		LATEST_REASON="GitHub Releases API 返回了无效 JSON"
+		return 1
+	}
+
+	if load_release_metadata; then
+		case "${LATEST_TAG}" in
+			manual-*)
+				LATEST_REASON="最新 release 是手动构建 (${LATEST_TAG})，已跳过"
+				reset_release_metadata
+				return 1
+				;;
+		esac
+		return 0
+	fi
+
+	json_get_var api_message message
+	[ -n "$api_message" ] && LATEST_REASON="GitHub Releases API 返回错误：$api_message"
+	return 1
+}
+
+load_release_from_list() {
+	local releases_json release_keys release_key
+	local api_message draft prerelease tag
+
+	releases_json="$(fetch_stdout "$GITHUB_RELEASES_API")" || {
+		[ -n "$LATEST_REASON" ] || LATEST_REASON="无法访问 GitHub Releases API，可能是网络不可达"
+		return 1
+	}
+
+	json_load "$releases_json" || {
+		LATEST_REASON="GitHub Releases API 返回了无效 JSON"
+		return 1
+	}
+
+	json_get_var api_message message
+	if [ -n "$api_message" ]; then
+		LATEST_REASON="GitHub Releases API 返回错误：$api_message"
+		return 1
+	fi
+
+	json_get_keys release_keys
+	for release_key in $release_keys; do
+		json_select "$release_key" || continue
+
+		tag=""
+		draft=0
+		prerelease=0
+		json_get_var tag tag_name
+		json_get_var draft draft
+		json_get_var prerelease prerelease
+
+		if [ -n "$tag" ] &&
+		   ! is_json_true "$draft" &&
+		   ! is_json_true "$prerelease"; then
+			case "${tag}" in
+				manual-*) json_select ..; continue ;;
+			esac
+			load_release_metadata
+			json_select ..
+
+			if try_selected_release_manifest; then
+				return 0
+			fi
+
+			continue
+		fi
+
+		json_select ..
+	done
+
+	reset_release_metadata
+	LATEST_REASON="GitHub 上暂时没有可用于在线更新的正式 release"
+	return 0
+}
+
+select_matching_build() {
+	local manifest_json="$1"
+	local build_keys build_key
+	local distro version target format
+	local ver_prefix rest file_list arch_match pkg_arch
+	local best_version best_build pv
+
+	REMOTE_PACKAGE_VERSION=""
+	REMOTE_ASSET_PREFIX=""
+	REMOTE_BUNDLE=""
+	REMOTE_PACKAGE_FORMAT=""
+	REMOTE_FILES=""
+	LATEST_SUPPORTED=0
+	LATEST_REASON="当前系统没有匹配的发布包"
+
+	json_load "$manifest_json" || {
+		LATEST_REASON="发布 manifest 不是有效 JSON"
+		return 1
+	}
+
+	json_select builds || {
+		LATEST_REASON="发布 manifest 缺少 builds"
+		return 1
+	}
+
+	# Extract major.minor prefix for fallback (e.g. "24.10" from "24.10-SNAPSHOT")
+	ver_prefix=""
+	case "$SYS_RELEASE" in
+		[0-9]*.[0-9]*)
+			ver_prefix="${SYS_RELEASE%%.*}"
+			rest="${SYS_RELEASE#*.}"
+			ver_prefix="${ver_prefix}.${rest%%.*}"
+			;;
+	esac
+
+	# Pass 1 — exact: distro + version + target + format
+	json_get_keys build_keys
+	for build_key in $build_keys; do
+		json_select "$build_key" || continue
+		json_get_var distro distro
+		json_get_var version version
+		json_get_var target target
+		json_get_var format package_format
+
+		if [ "$distro" = "$SYS_DISTRO" ] &&
+		   [ "$version" = "$SYS_RELEASE" ] &&
+		   [ "$target" = "$SYS_TARGET" ] &&
+		   [ "$format" = "$SYS_PACKAGE_FORMAT" ]; then
+			_select_build_fields
+			LATEST_SUPPORTED=1
+			LATEST_REASON="精确匹配: ${distro} ${version} ${target}"
+			json_select ..
+			json_select ..
+			return 0
+		fi
+
+		json_select ..
+	done
+
+	# Pass 2 — arch-based: distro + format + arch from installed package database
+	pkg_arch="$(package_arch fakesip)"
+	if [ -n "$pkg_arch" ]; then
+		best_version=""
+		best_build=""
+
+		json_get_keys build_keys
+		for build_key in $build_keys; do
+			json_select "$build_key" || continue
+			json_get_var distro distro
+			json_get_var target target
+			json_get_var format package_format
+			json_get_var pv package_version
+
+			if [ "$distro" = "$SYS_DISTRO" ] &&
+			   [ "$target" = "$SYS_TARGET" ] &&
+			   [ "$format" = "$SYS_PACKAGE_FORMAT" ]; then
+				json_get_values file_list files
+				arch_match=0
+				for f in $file_list; do
+					case "$f" in
+						*_${pkg_arch}.ipk|*_${pkg_arch}.apk)
+							arch_match=1; break ;;
+					esac
+				done
+
+				if [ "$arch_match" -eq 1 ]; then
+					if [ -z "$best_version" ] || \
+					   [ "$(printf '%s\n%s' "$pv" "$best_version" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)" = "$pv" ]; then
+						best_version="$pv"
+						best_build="$build_key"
+					fi
+				fi
+			fi
+
+			json_select ..
+		done
+
+		if [ -n "$best_build" ]; then
+			json_select "$best_build"
+			_select_build_fields
+			LATEST_SUPPORTED=1
+			LATEST_REASON="按架构 ${pkg_arch} 匹配，版本 ${best_version}"
+			json_select ..
+			json_select ..
+			return 0
+		fi
+	fi
+
+	# Pass 3 — fuzzy: distro + target + format + same major.minor
+	if [ -n "$ver_prefix" ]; then
+		best_version=""
+		best_build=""
+
+		json_get_keys build_keys
+		for build_key in $build_keys; do
+			json_select "$build_key" || continue
+			json_get_var distro distro
+			json_get_var version version
+			json_get_var target target
+			json_get_var format package_format
+
+			if [ "$distro" = "$SYS_DISTRO" ] &&
+			   [ "$target" = "$SYS_TARGET" ] &&
+			   [ "$format" = "$SYS_PACKAGE_FORMAT" ]; then
+				case "$version" in
+					"${ver_prefix}."*)
+						if [ -z "$best_version" ] || \
+						   [ "${version##*.}" -ge "${best_version##*.}" ] 2>/dev/null; then
+							best_version="$version"
+							best_build="$build_key"
+						fi
+						;;
+				esac
+			fi
+
+			json_select ..
+		done
+
+		if [ -n "$best_build" ]; then
+			json_select "$best_build"
+			_select_build_fields
+			LATEST_SUPPORTED=1
+			LATEST_REASON="大版本匹配: ${ver_prefix}.x (系统 ${SYS_RELEASE})"
+			json_select ..
+			json_select ..
+			return 0
+		fi
+	fi
+
+	json_select ..
+	return 0
+}
+
+_select_build_fields() {
+	json_get_var REMOTE_PACKAGE_VERSION package_version
+	json_get_var REMOTE_ASSET_PREFIX asset_prefix
+	json_get_var REMOTE_BUNDLE bundle
+	json_get_var REMOTE_PACKAGE_FORMAT package_format
+	json_get_values REMOTE_FILES files
+}
+
+check_latest() {
+	local manifest_json
+	local fakesip_relation luci_relation
+
+	LATEST_CHECKED=1
+	LATEST_SUPPORTED=0
+	UPDATE_AVAILABLE=0
+	LATEST_RELEASE_AVAILABLE=0
+	reset_release_metadata
+	REMOTE_PACKAGE_VERSION=""
+	REMOTE_ASSET_PREFIX=""
+	REMOTE_BUNDLE=""
+	REMOTE_PACKAGE_FORMAT=""
+	REMOTE_FILES=""
+	RELEASE_MANIFEST_JSON=""
+	LATEST_REASON=""
+
+	[ -n "$SYS_RELEASE" ] && [ -n "$SYS_TARGET" ] || {
+		LATEST_REASON="无法识别当前系统版本或 target"
+		return 0
+	}
+
+	[ "$SYS_PKG_MANAGER" != "none" ] || {
+		LATEST_REASON="未找到 opkg 或 apk 包管理器"
+		return 0
+	}
+
+	if load_latest_release && try_selected_release_manifest; then
+		manifest_json="$RELEASE_MANIFEST_JSON"
+	else
+		RELEASE_MANIFEST_JSON=""
+		reset_release_metadata
+		load_release_from_list || return 1
+		manifest_json="$RELEASE_MANIFEST_JSON"
+	fi
+
+	[ "$LATEST_RELEASE_AVAILABLE" -eq 1 ] || return 0
+	[ -n "$manifest_json" ] || return 0
+
+	select_matching_build "$manifest_json" || return 1
+
+	read_local_versions
+	if [ "$LATEST_SUPPORTED" -eq 1 ] && [ -z "$REMOTE_PACKAGE_VERSION" ]; then
+		LATEST_REASON="匹配的发布包缺少包版本信息"
+		return 1
+	fi
+
+	if [ "$LATEST_SUPPORTED" -eq 1 ]; then
+		fakesip_relation="$(remote_version_relation "$FAKESIP_VERSION")"
+		luci_relation="$(remote_version_relation "$LUCI_VERSION")"
+
+		if [ "$fakesip_relation" = "older" ] || [ "$luci_relation" = "older" ]; then
+			UPDATE_AVAILABLE=0
+			LATEST_REASON="当前安装版本高于发布包版本 ${REMOTE_PACKAGE_VERSION}"
+		elif [ "$fakesip_relation" = "newer" ] || [ "$luci_relation" = "newer" ] ||
+		     [ "$fakesip_relation" = "missing" ] || [ "$luci_relation" = "missing" ]; then
+			UPDATE_AVAILABLE=1
+			LATEST_REASON="发现可用更新"
+		else
+			UPDATE_AVAILABLE=0
+			LATEST_REASON="已是最新版本"
+		fi
+	fi
+
+	return 0
+}
+
+archive_has_unsafe_paths() {
+	local archive="$1"
+
+	tar -tzf "$archive" 2>/dev/null | grep -Eq '(^/|(^|/)\.\.(/|$))'
+}
+
+download_selected_assets() {
+	local checksums_url bundle_url
+
+	TMP_DIR="$(mktemp -d /tmp/fakesip-update.XXXXXX)" || return 1
+
+	checksums_url="${GITHUB_DOWNLOAD_BASE}/${LATEST_TAG}/sha256sums.txt"
+	progress_update downloading "正在下载校验文件"
+	progress_log "下载地址：${checksums_url}"
+	download_file "$checksums_url" "$TMP_DIR/sha256sums.txt" || return 1
+
+	bundle_url="${GITHUB_DOWNLOAD_BASE}/${LATEST_TAG}/${REMOTE_BUNDLE}"
+	progress_update downloading "正在下载更新包 ${REMOTE_BUNDLE}"
+	progress_log "下载地址：${bundle_url}"
+	download_file "$bundle_url" "$TMP_DIR/${REMOTE_BUNDLE}" || return 1
+
+	progress_update verifying "正在校验更新包"
+	if [ "${PROGRESS_ENABLED:-0}" -eq 1 ]; then
+		(cd "$TMP_DIR" && grep -F "${REMOTE_BUNDLE}" sha256sums.txt | sha256sum -c -) >> "$PROGRESS_LOG" 2>&1
+	else
+		(cd "$TMP_DIR" && grep -F "${REMOTE_BUNDLE}" sha256sums.txt | sha256sum -c -)
+	fi
+}
+
+install_downloaded_packages() {
+	local asset files extract_dir pkg_file
+
+	extract_dir="${TMP_DIR}/extract"
+	mkdir -p "$extract_dir"
+
+	if archive_has_unsafe_paths "$TMP_DIR/${REMOTE_BUNDLE}"; then
+		echo "unsafe archive entries found in ${REMOTE_BUNDLE}" >&2
+		return 1
+	fi
+
+	tar -xzf "$TMP_DIR/${REMOTE_BUNDLE}" -C "$extract_dir" || {
+		echo "failed to extract ${REMOTE_BUNDLE}" >&2
+		return 1
+	}
+
+	files=""
+	for asset in $REMOTE_FILES; do
+		pkg_file="$(find "$extract_dir" -name "$asset" -print | head -1)"
+		if [ -n "$pkg_file" ]; then
+			files="$files $pkg_file"
+		fi
+	done
+
+	if [ -z "$files" ]; then
+		echo "no matching packages found in bundle" >&2
+		return 1
+	fi
+
+	case "$SYS_PKG_MANAGER" in
+		opkg)
+			opkg install $files 2>&1
+			;;
+		apk)
+			apk add --allow-untrusted $files 2>&1
+			;;
+		*)
+			echo "unsupported package manager: $SYS_PKG_MANAGER" >&2
+			return 1
+			;;
+	esac
+}
+
+run_package_manager_install() {
+	if [ "${PROGRESS_ENABLED:-0}" -eq 1 ]; then
+		install_downloaded_packages >> "$PROGRESS_LOG" 2>&1
+	else
+		INSTALL_LOG="$(install_downloaded_packages)"
+	fi
+}
+
+install_latest() {
+	progress_update checking "正在检查可用更新"
+	check_latest || return 1
+
+	if [ "$LATEST_SUPPORTED" -ne 1 ]; then
+		return 1
+	fi
+
+	if [ "$UPDATE_AVAILABLE" -ne 1 ]; then
+		return 0
+	fi
+
+	progress_update downloading "准备下载更新包"
+	download_selected_assets || {
+		LATEST_REASON="下载或校验更新包失败"
+		return 1
+	}
+
+	service_is_running && SERVICE_WAS_RUNNING=1 || SERVICE_WAS_RUNNING=0
+	if [ "$SERVICE_WAS_RUNNING" -eq 1 ]; then
+		progress_update stopping "正在停止 FakeSIP 服务"
+		stop_service_if_running || {
+			LATEST_REASON="停止 FakeSIP 服务失败，未执行更新"
+			return 1
+		}
+	fi
+
+	progress_update installing "正在安装更新包"
+	if run_package_manager_install; then
+		if [ "$SERVICE_WAS_RUNNING" -eq 1 ]; then
+			progress_update restarting "正在恢复 FakeSIP 服务"
+		fi
+		restart_service_if_needed || true
+		LATEST_REASON="在线更新完成"
+		check_latest >/dev/null 2>&1 || true
+		LATEST_REASON="在线更新完成"
+		return 0
+	fi
+
+	if [ "$SERVICE_WAS_RUNNING" -eq 1 ]; then
+		progress_update restarting "正在恢复 FakeSIP 服务"
+	fi
+	restart_service_if_needed || true
+	LATEST_REASON="包管理器安装失败"
+	return 1
+}
+
+background_exit() {
+	local code="$?"
+
+	if [ "${PROGRESS_DONE:-0}" -ne 1 ]; then
+		progress_finish 0 "$code" failed "在线更新异常中断"
+		release_update_lock
+	fi
+
+	cleanup
+}
+
+background_abort() {
+	progress_finish 0 1 failed "在线更新被中断"
+	PROGRESS_DONE=1
+	release_update_lock
+	cleanup
+	exit 1
+}
+
+run_background_install() {
+	PROGRESS_ENABLED=1
+	PROGRESS_DONE=0
+	trap background_exit EXIT
+	trap background_abort INT TERM
+
+	load_system_info
+	read_local_versions
+
+	if install_latest; then
+		PROGRESS_DONE=1
+		progress_finish 1 0 finished "${LATEST_REASON:-在线更新完成}"
+	else
+		PROGRESS_DONE=1
+		progress_finish 0 1 failed "${LATEST_REASON:-在线更新失败}"
+	fi
+
+	release_update_lock
+}
+
+spawn_background_install() {
+	local script_path="$0"
+	local bg_pid
+
+	case "$script_path" in
+		/*) ;;
+		*) script_path="$(command -v "$script_path" 2>/dev/null || printf '%s' "$script_path")" ;;
+	esac
+
+	rm -f "${PROGRESS_DIR}/pid"
+	if command -v start-stop-daemon >/dev/null 2>&1 &&
+	   start-stop-daemon -S -b -m -p "${PROGRESS_DIR}/pid" -x "$script_path" -- install-run >/dev/null 2>&1; then
+		return 0
+	fi
+
+	("$script_path" install-run </dev/null >/dev/null 2>&1) &
+	bg_pid="$!"
+	progress_write pid "$bg_pid"
+}
+
+start_background_install() {
+	if ! acquire_update_lock; then
+		emit_progress_response 1 install-start "已有在线更新任务正在运行"
+		return 0
+	fi
+
+	progress_reset || {
+		release_update_lock
+		emit_progress_response 0 install-start "无法初始化在线更新进度状态"
+		return 1
+	}
+
+	if ! spawn_background_install; then
+		progress_finish 0 1 failed "无法启动后台在线更新任务"
+		release_update_lock
+		emit_progress_response 0 install-start "无法启动后台在线更新任务"
+		return 1
+	fi
+
+	emit_progress_response 1 install-start "在线更新已开始"
+}
+
+COMMAND="${1:-status}"
+load_system_info
+read_local_versions
+
+case "$COMMAND" in
+	status)
+		emit_response 1 status "已读取本机版本信息"
+		;;
+	check)
+		if check_latest; then
+			emit_response 1 check "$LATEST_REASON"
+		else
+			emit_response 0 check "$LATEST_REASON"
+			exit 1
+		fi
+		;;
+	install)
+		if install_latest; then
+			emit_response 1 install "$LATEST_REASON"
+		else
+			emit_response 0 install "$LATEST_REASON"
+			exit 1
+		fi
+		;;
+	install-start)
+		start_background_install || exit 1
+		;;
+	install-run)
+		run_background_install
+		;;
+	progress)
+		emit_progress_response 1 progress "已读取在线更新进度"
+		;;
+	*)
+		emit_response 0 "$COMMAND" "Usage: $0 {status|check|install|install-start|progress}"
+		exit 1
+		;;
+esac

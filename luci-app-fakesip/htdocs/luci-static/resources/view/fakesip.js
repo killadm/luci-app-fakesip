@@ -16,6 +16,10 @@ var callServiceList = rpc.declare({
 
 var CRON_BEGIN = '# BEGIN fakesip scheduled restart';
 var initActionPending = false;
+var updateActionPending = false;
+var updatePanelId = 'fakesip-update-panel';
+var updateHelper = '/usr/libexec/fakesip-update';
+var updatePollInterval = 1500;
 var stylesheetId = 'fakesip-view-stylesheet';
 
 function loadStylesheet() {
@@ -130,13 +134,532 @@ function renderRuntimeStatus(enabled, status) {
 		'</div>';
 }
 
-function tailText(text, count) {
+function asBool(value) {
+	return value === true || value === 1 || value === '1';
+}
+
+function getPackageInfo(updateInfo, key) {
+	var packages = updateInfo && updateInfo.packages ? updateInfo.packages : {};
+
+	return packages[key] || {};
+}
+
+function formatValue(value) {
+	return value == null || value === '' ? '-' : String(value);
+}
+
+function formatPackageVersion(pkg) {
+	if (!asBool(pkg.installed))
+		return '未安装';
+
+	return formatValue(pkg.version);
+}
+
+function getCurrentVersionText(updateInfo) {
+	var fakesipPkg = getPackageInfo(updateInfo, 'fakesip');
+	var luciPkg = getPackageInfo(updateInfo, 'luci');
+	var fakesipVersion = formatPackageVersion(fakesipPkg);
+	var luciVersion = formatPackageVersion(luciPkg);
+
+	if (fakesipVersion === luciVersion)
+		return fakesipVersion;
+
+	return '服务 ' + fakesipVersion + ' / LuCI ' + luciVersion;
+}
+
+function getSystemText(updateInfo) {
+	var system = updateInfo && updateInfo.system ? updateInfo.system : {};
+	var distro = formatValue(system.distro_name) + (system.release ? ' ' + system.release : '');
+	var parts = [ distro ];
+
+	if (system.target)
+		parts.push(system.target);
+
+	if (system.package_format)
+		parts.push(system.package_format);
+
+	return parts.join(' / ');
+}
+
+function parseUpdateResult(res, command, fallbackMessage) {
+	var data = null;
+
+	try {
+		data = JSON.parse((res && res.stdout) || '{}');
+	} catch (e) {
+		data = null;
+	}
+
+	if (!data || typeof data !== 'object')
+		data = {};
+
+	if (data.ok == null)
+		data.ok = !res || res.code === 0;
+
+	if (!data.command)
+		data.command = command;
+
+	if (!data.message)
+		data.message = String((res && (res.stderr || res.stdout || res.message)) || fallbackMessage || '命令执行失败').trim();
+
+	return data;
+}
+
+function execUpdateHelper(command) {
+	return fs.exec(updateHelper, [ command ]).then(function(res) {
+		return parseUpdateResult(res, command);
+	}).catch(function(err) {
+		return parseUpdateResult(err, command, String(err && (err.message || err) || 'RPC 调用失败'));
+	});
+}
+
+function getProgressPayload(data) {
+	return data && data.progress && typeof data.progress === 'object' ? data.progress : {};
+}
+
+function getInitialProgressPayload(data) {
+	var progress = getProgressPayload(data);
+
+	if (!isUpdateProgressRunning(progress) && progress.stage === 'finished' && asBool(progress.ok))
+		return {};
+
+	return progress;
+}
+
+function isUpdateProgressRunning(progress) {
+	return asBool(progress && progress.running);
+}
+
+function hasUpdateProgress(progress) {
+	return !!(progress && (isUpdateProgressRunning(progress) || progress.stage || progress.message || progress.log));
+}
+
+function getProgressStageText(stage) {
+	return ({
+		'starting': '准备中',
+		'checking': '检查更新',
+		'downloading': '下载中',
+		'verifying': '校验中',
+		'stopping': '停止服务',
+		'installing': '安装中',
+		'restarting': '恢复服务',
+		'finished': '已完成',
+		'failed': '已失败',
+		'idle': '未运行'
+	})[stage] || '处理中';
+}
+
+function stopUpdatePolling(viewObj) {
+	if (viewObj.updatePollTimer) {
+		window.clearTimeout(viewObj.updatePollTimer);
+		viewObj.updatePollTimer = null;
+	}
+}
+
+function scheduleUpdatePoll(viewObj) {
+	stopUpdatePolling(viewObj);
+	viewObj.updatePollTimer = window.setTimeout(function() {
+		pollUpdateProgress(viewObj);
+	}, updatePollInterval);
+}
+
+function notifyFinishedProgress(progress) {
+	notifyUpdateResult({
+		ok: asBool(progress && progress.ok),
+		message: (progress && progress.message) || (asBool(progress && progress.ok) ? '在线更新完成' : '在线更新失败'),
+		log: progress && progress.log
+	}, 'install');
+}
+
+function refreshUpdateInfoAfterInstall(viewObj) {
+	return execUpdateHelper('check').then(function(data) {
+		replaceUpdatePanel(viewObj, data);
+	}, function() {
+		replaceUpdatePanel(viewObj, viewObj.updateInfo);
+	});
+}
+
+function handleUpdatePollFailure(viewObj, message) {
+	viewObj.updatePollFailures = (viewObj.updatePollFailures || 0) + 1;
+
+	if (viewObj.updatePollFailures <= 3) {
+		scheduleUpdatePoll(viewObj);
+		return;
+	}
+
+	updateActionPending = false;
+	viewObj.updateProgressActive = false;
+	stopUpdatePolling(viewObj);
+	replaceUpdatePanel(viewObj, viewObj.updateInfo);
+	notifyUpdateResult({
+		ok: false,
+		message: message || '读取升级进度失败'
+	}, 'install');
+}
+
+function pollUpdateProgress(viewObj) {
+	return execUpdateHelper('progress').then(function(data) {
+		var progress = getProgressPayload(data);
+		var running = isUpdateProgressRunning(progress);
+
+		if (!asBool(data.ok) && !data.progress)
+			return handleUpdatePollFailure(viewObj, data.message);
+
+		viewObj.updatePollFailures = 0;
+		viewObj.updateProgress = progress;
+		updateActionPending = running;
+		replaceUpdatePanel(viewObj, viewObj.updateInfo);
+
+		if (running) {
+			scheduleUpdatePoll(viewObj);
+			return;
+		}
+
+		stopUpdatePolling(viewObj);
+		if (viewObj.updateProgressActive) {
+			viewObj.updateProgressActive = false;
+			notifyFinishedProgress(progress);
+
+			if (asBool(progress.ok))
+				return refreshUpdateInfoAfterInstall(viewObj);
+		}
+	}, function(err) {
+		return handleUpdatePollFailure(viewObj, String(err && (err.message || err) || '读取升级进度失败'));
+	});
+}
+
+function startUpdatePolling(viewObj) {
+	viewObj.updateProgressActive = true;
+	viewObj.updatePollFailures = 0;
+	updateActionPending = true;
+	replaceUpdatePanel(viewObj, viewObj.updateInfo);
+	return pollUpdateProgress(viewObj);
+}
+
+function recoverStartedUpdate(viewObj, fallbackData) {
+	return execUpdateHelper('progress').then(function(progressData) {
+		var progress = getProgressPayload(progressData);
+
+		viewObj.updateProgress = progress;
+		if (isUpdateProgressRunning(progress) || hasUpdateProgress(progress))
+			return startUpdatePolling(viewObj);
+
+		updateActionPending = false;
+		replaceUpdatePanel(viewObj, viewObj.updateInfo);
+		notifyUpdateResult(fallbackData, 'install');
+	}, function() {
+		updateActionPending = false;
+		replaceUpdatePanel(viewObj, viewObj.updateInfo);
+		notifyUpdateResult(fallbackData, 'install');
+	});
+}
+
+function isRequestTimeoutMessage(message) {
+	return /timeout|timed out/i.test(String(message || ''));
+}
+
+function getUpdateStateLabel(updateInfo) {
+	var latest = updateInfo && updateInfo.latest ? updateInfo.latest : {};
+
+	if (!asBool(latest.checked))
+		return { text: '检查更新', cls: 'cbi-button cbi-button-reload' };
+
+	if (!asBool(updateInfo.ok))
+		return { text: '检查失败', cls: 'cbi-button cbi-button-reload' };
+
+	if (!asBool(latest.release_available) && !latest.release_tag)
+		return { text: '暂无发布', cls: 'cbi-button cbi-button-reload' };
+
+	if (!asBool(latest.supported))
+		return { text: '不支持', cls: 'cbi-button cbi-button-reload' };
+
+	if (asBool(latest.update_available))
+		return { text: '可更新', cls: 'cbi-button cbi-button-apply' };
+
+	return { text: '已是最新', cls: 'cbi-button' };
+}
+
+function renderReleaseValue(latest) {
+	var tag = latest && latest.release_tag ? latest.release_tag : '-';
+
+	if (latest && /^https?:\/\//.test(latest.release_url))
+		return E('a', {
+			'href': latest.release_url,
+			'target': '_blank',
+			'rel': 'noopener noreferrer'
+		}, [ tag ]);
+
+	return E('span', { 'class': 'fakesip-mono' }, [ tag ]);
+}
+
+function showFakesipModal(title, children) {
+	var args = [ title, children ];
+
+	for (var i = 2; i < arguments.length; i++) {
+		var classes = String(arguments[i] || '').trim().split(/\s+/);
+
+		for (var j = 0; j < classes.length; j++)
+			if (classes[j])
+				args.push(classes[j]);
+	}
+
+	return ui.showModal.apply(ui, args);
+}
+
+function confirmInstallUpdate(updateInfo) {
+	var latest = updateInfo && updateInfo.latest ? updateInfo.latest : {};
+	var version = latest.package_version || '最新版本';
+
+	return new Promise(function(resolve) {
+		showFakesipModal('确认在线更新', [
+			E('div', { 'class': 'fakesip-update-confirm' }, [
+				E('p', {}, [
+					'将从 GitHub Release 下载与当前系统完全匹配的 FakeSIP 安装包，并调用系统包管理器安装至 ',
+					E('strong', {}, [ version ]),
+					'。'
+				]),
+				E('p', {}, [
+					'安装前会校验 sha256；如果服务正在运行，会先停止并在安装完成后恢复运行。'
+				]),
+				E('div', { 'class': 'button-row' }, [
+					E('button', {
+						'class': 'btn cbi-button',
+						'type': 'button',
+						'click': function() {
+							resolve(false);
+							ui.hideModal();
+						}
+					}, [ '取消' ]), ' ',
+					E('button', {
+						'class': 'btn cbi-button cbi-button-apply important',
+						'type': 'button',
+						'click': function() {
+							resolve(true);
+							ui.hideModal();
+						}
+					}, [ '确认更新' ])
+				])
+			])
+		], 'cbi-modal', 'fakesip-update-confirm-modal');
+	});
+}
+
+function addUpdateNotification(title, body, type) {
+	var node = ui.addNotification(title, body, type);
+	var button = node ? node.querySelector('button') : null;
+
+	if (button) {
+		button.addEventListener('click', function(ev) {
+			ev.preventDefault();
+			if (ev.stopImmediatePropagation)
+				ev.stopImmediatePropagation();
+			else
+				ev.stopPropagation();
+
+			if (node.parentNode)
+				node.parentNode.removeChild(node);
+		}, true);
+	}
+
+	return node;
+}
+
+function notifyUpdateResult(data, command) {
+	var title = data.ok ? null : (command === 'check' ? '检查更新失败' : '在线更新失败');
+	var type = data.ok ? 'info' : 'danger';
+	var body = [ E('p', {}, [ data.message || '操作完成' ]) ];
+
+	if (data.log)
+		body.push(E('pre', { 'class': 'fakesip-notification-log' }, [
+			command === 'install' ? tailTextNewestFirst(data.log, 80) : tailText(data.log, 80)
+		]));
+
+	if (command === 'check' && data.ok && data.latest && !asBool(data.latest.supported))
+		type = 'warning';
+
+	addUpdateNotification(title, body, type);
+}
+
+function replaceUpdatePanel(viewObj, updateInfo) {
+	var oldPanel = document.getElementById(updatePanelId);
+	var newPanel;
+
+	viewObj.updateInfo = updateInfo;
+
+	if (!oldPanel || !oldPanel.parentNode)
+		return;
+
+	newPanel = renderUpdatePanel(viewObj);
+	oldPanel.parentNode.replaceChild(newPanel, oldPanel);
+}
+
+function runUpdateCommand(viewObj, command) {
+	var start = command === 'install' ? confirmInstallUpdate(viewObj.updateInfo) : Promise.resolve(true);
+
+	return start.then(function(confirmed) {
+		if (!confirmed || updateActionPending)
+			return false;
+
+		updateActionPending = true;
+		replaceUpdatePanel(viewObj, viewObj.updateInfo);
+
+		if (command === 'install') {
+			return execUpdateHelper('install-start').then(function(data) {
+				var progress = getProgressPayload(data);
+
+				viewObj.updateProgress = progress;
+				if (!asBool(data.ok) && !isUpdateProgressRunning(progress)) {
+					if (hasUpdateProgress(progress))
+						return startUpdatePolling(viewObj);
+
+					if (isRequestTimeoutMessage(data.message))
+						return recoverStartedUpdate(viewObj, data);
+
+					updateActionPending = false;
+					replaceUpdatePanel(viewObj, viewObj.updateInfo);
+					notifyUpdateResult(data, command);
+					return;
+				}
+
+				return startUpdatePolling(viewObj);
+			}, function(err) {
+				var data = {
+					ok: false,
+					command: command,
+					message: String(err && (err.message || err) || 'RPC 调用失败')
+				};
+
+				updateActionPending = false;
+				replaceUpdatePanel(viewObj, viewObj.updateInfo);
+				notifyUpdateResult(data, command);
+			});
+		}
+
+		return execUpdateHelper(command).then(function(data) {
+			updateActionPending = false;
+			replaceUpdatePanel(viewObj, data);
+			notifyUpdateResult(data, command);
+		}, function(err) {
+			var data = {
+				ok: false,
+				command: command,
+				message: String(err && (err.message || err) || 'RPC 调用失败')
+			};
+
+			updateActionPending = false;
+			replaceUpdatePanel(viewObj, data);
+			notifyUpdateResult(data, command);
+		});
+	});
+}
+
+function renderUpdateProgress(progress) {
+	var running = isUpdateProgressRunning(progress);
+	var stage = progress && progress.stage ? progress.stage : 'idle';
+	var message = progress && progress.message ? progress.message : '';
+	var log = progress && progress.log ? progress.log : '';
+	var labelClass = running ? 'label warning' : (asBool(progress && progress.ok) ? 'label success' : 'label warning');
+
+	if (!hasUpdateProgress(progress) || (stage === 'idle' && !message && !log))
+		return null;
+
+	return E('div', { 'class': 'fakesip-update-progress' }, [
+		E('div', { 'class': 'fakesip-update-progress-head' }, [
+			E('span', { 'class': labelClass }, [ getProgressStageText(stage) ]),
+			message ? E('span', { 'class': 'fakesip-update-status-text' }, [ message ]) : null
+		].filter(function(el) { return el != null; })),
+		log ? E('pre', { 'class': 'fakesip-update-log' }, [ tailTextNewestFirst(log, 120, '暂无升级日志') ]) : null
+	].filter(function(el) { return el != null; }));
+}
+
+function renderUpdatePanel(viewObj) {
+	var updateInfo = viewObj.updateInfo || {};
+	var progress = viewObj.updateProgress || {};
+	var latest = updateInfo.latest || {};
+	var state = getUpdateStateLabel(updateInfo);
+	var checked = asBool(latest.checked);
+	var isUpdateAvailable = checked && asBool(latest.supported) && asBool(latest.update_available);
+	var latestVersion = latest.package_version || (checked ? '-' : '未检查');
+	var progressRunning = isUpdateProgressRunning(progress);
+	var showProgress = progressRunning || viewObj.updateProgressActive ||
+		(progress && (progress.stage === 'finished' || progress.stage === 'failed'));
+	var msg = progressRunning ? '' : (checked ? (latest.reason || (updateInfo && updateInfo.message) || '') : '');
+	var metaChildren = [ getSystemText(updateInfo) ];
+	var btnText, btnAction, btnClass, btnTitle, btnDisabled;
+
+	if (updateActionPending || progressRunning) {
+		btnText = progressRunning ? '升级中' : '处理中';
+		btnAction = null;
+		btnClass = 'cbi-button cbi-button-reload';
+		btnTitle = '';
+		btnDisabled = 'disabled';
+	} else if (isUpdateAvailable) {
+		btnText = '更新到 ' + (latest.package_version || '最新版本');
+		btnAction = 'install';
+		btnClass = 'cbi-button cbi-button-apply';
+		btnTitle = '下载并安装匹配当前系统的发布包';
+		btnDisabled = null;
+	} else {
+		btnText = state.text;
+		btnAction = 'check';
+		btnClass = state.cls;
+		btnTitle = checked ? '重新检查更新' : '从 GitHub Release 检查最新版本';
+		btnDisabled = null;
+	}
+
+	if (latest.release_tag)
+		metaChildren.push(' / Release ', renderReleaseValue(latest));
+
+	var btnProps = {
+		'class': btnClass,
+		'type': 'button',
+		'title': btnTitle,
+		'click': function(ev) {
+			ev.preventDefault();
+			ev.stopPropagation();
+			if (btnAction)
+				return runUpdateCommand(viewObj, btnAction);
+			return false;
+		}
+	};
+
+	if (btnDisabled)
+		btnProps.disabled = btnDisabled;
+
+	return E('div', { 'id': updatePanelId, 'class': 'fakesip-update-panel' }, [
+		E('div', { 'class': 'fakesip-update-brief-item' }, [
+			E('span', { 'class': 'fakesip-update-brief-label' }, [ '当前版本' ]),
+			E('span', { 'class': 'fakesip-mono' }, [ getCurrentVersionText(updateInfo) ])
+		]),
+		E('div', { 'class': 'fakesip-update-brief-item' }, [
+			E('span', { 'class': 'fakesip-update-brief-label' }, [ '最新版本' ]),
+			E('span', { 'class': 'fakesip-mono' }, [ latestVersion ])
+		]),
+		E('div', { 'class': 'cbi-value-description fakesip-update-meta' }, metaChildren),
+		E('div', { 'class': 'fakesip-action-group fakesip-update-actions' }, [
+			E('button', btnProps, [ btnText ]),
+			msg ? E('span', { 'class': 'fakesip-update-status-text' }, [ msg ]) : null
+		].filter(function(el) { return el != null; })),
+		showProgress ? renderUpdateProgress(progress) : null
+	].filter(function(el) { return el != null; }));
+}
+
+function tailText(text, count, fallback) {
 	var lines = String(text || '').trim().split(/\r?\n/);
 
 	if (lines.length > count)
 		lines = lines.slice(lines.length - count);
 
-	return lines.join('\n') || '暂无 FakeSIP 日志';
+	return lines.join('\n') || fallback || '暂无 FakeSIP 日志';
+}
+
+function tailTextNewestFirst(text, count, fallback) {
+	var lines = String(text || '').trim().split(/\r?\n/);
+
+	if (lines.length > count)
+		lines = lines.slice(lines.length - count);
+
+	return lines.reverse().join('\n') || fallback || '暂无 FakeSIP 日志';
 }
 
 function renderLogPanel(text, count) {
@@ -228,8 +751,7 @@ function renderFilterOrderHelp() {
 	return E('div', { 'class': 'fakesip-filter-help' }, [
 		E('ul', {}, [
 			E('li', {}, [ '只有黑名单：默认都处理，命中 ', E('code', {}, [ 'deny' ]), ' 的不处理。' ]),
-			E('li', {}, [ '只有 IP 白名单：只处理源 IP 或目的 IP 命中的流量。' ]),
-			E('li', {}, [ '只有端口白名单：只处理源端口或目的端口命中的流量。' ]),
+			E('li', {}, [ '只有 IP/端口 白名单：只处理源 IP/端口 或目的 IP/端口 命中的流量。' ]),
 			E('li', {}, [ '同时有 IP 白名单和端口白名单：必须 IP 命中且端口命中才处理。' ]),
 			E('li', {}, [ '同时命中 ', E('code', {}, [ 'allow' ]), ' 和 ', E('code', {}, [ 'deny' ]), '：按 ', E('code', {}, [ 'deny' ]), ' 处理，不生成 FakeSIP 混淆包。' ])
 		])
@@ -238,23 +760,23 @@ function renderFilterOrderHelp() {
 
 function confirmSilentDisabledSave() {
 	return new Promise(function(resolve) {
-		ui.showModal('确认关闭静默模式', [
+		showFakesipModal('确认关闭静默模式', [
 			E('p', {}, [ '关闭静默模式会逐包输出日志，可能快速增加日志量。除排查问题时外，日常使用建议开启。' ]),
 			E('div', { 'class': 'button-row' }, [
 				E('button', {
 					'class': 'btn cbi-button',
 					'type': 'button',
 					'click': function() {
-						ui.hideModal();
 						resolve(false);
+						ui.hideModal();
 					}
 				}, [ '取消' ]), ' ',
 				E('button', {
 					'class': 'btn cbi-button cbi-button-negative important',
 					'type': 'button',
 					'click': function() {
-						ui.hideModal();
 						resolve(true);
+						ui.hideModal();
 					}
 				}, [ '确认保存' ])
 			])
@@ -451,6 +973,11 @@ function renderActionGroup(actions, footer) {
 return view.extend({
 	map: null,
 	silentOpt: null,
+	updateInfo: null,
+	updateProgress: null,
+	updateProgressActive: false,
+	updatePollTimer: null,
+	updatePollFailures: 0,
 
 	load: function() {
 		loadStylesheet();
@@ -460,7 +987,9 @@ return view.extend({
 				L.resolveDefault(callServiceList('fakesip'), {}),
 				L.resolveDefault(fs.read('/etc/crontabs/root'), ''),
 				L.resolveDefault(fs.exec('/usr/libexec/fakesip-logread', [ 'system', '200' ]), { stdout: '' }),
-				L.resolveDefault(fs.exec('/usr/libexec/fakesip-logread', [ 'file', '200' ]), { stdout: '' })
+				L.resolveDefault(fs.exec('/usr/libexec/fakesip-logread', [ 'file', '200' ]), { stdout: '' }),
+				L.resolveDefault(fs.exec(updateHelper, [ 'status' ]), { stdout: '' }),
+				L.resolveDefault(fs.exec(updateHelper, [ 'progress' ]), { stdout: '' })
 			]);
 		});
 	},
@@ -500,7 +1029,16 @@ return view.extend({
 		var crontab = data[1] || '';
 		var logOutput = data[2] && data[2].stdout ? data[2].stdout : '';
 		var fileLog = data[3] && data[3].stdout ? data[3].stdout : '';
+		var updateInfo = parseUpdateResult(data[4], 'status');
+		var progressInfo = parseUpdateResult(data[5], 'progress');
 		var m, s, o, p, f, enabledOpt, ifaceModeOpt, noHop, payloadTypeOpt, filterTypeOpt, silentOpt;
+
+		this.updateInfo = updateInfo;
+		this.updateProgress = getInitialProgressPayload(progressInfo);
+		if (isUpdateProgressRunning(this.updateProgress)) {
+			updateActionPending = true;
+			this.updateProgressActive = true;
+		}
 
 		m = new form.Map('fakesip', 'FakeSIP');
 
@@ -512,6 +1050,7 @@ return view.extend({
 		s.tab('basic', '基础设置');
 		s.tab('advanced', '高级设置');
 		s.tab('schedule', '定时重启');
+		s.tab('update', '更新');
 		s.tab('logs', '日志');
 
 		enabledOpt = s.taboption('status', form.Flag, 'enabled', '启用');
@@ -539,6 +1078,11 @@ return view.extend({
 				{ title: '清理残留规则', style: 'remove', action: 'cleanup_rules', success: '残留规则清理完成', label: '清理', disabled: serviceStatus.running }
 			], '定时重启：' + getScheduleText(crontab));
 		};
+
+		o = s.taboption('update', form.DummyValue, '_online_update', '版本更新');
+		o.renderWidget = L.bind(function() {
+			return renderUpdatePanel(this);
+		}, this);
 
 		ifaceModeOpt = s.taboption('basic', form.ListValue, 'interface_mode', '接口范围');
 		ifaceModeOpt.value('custom', '指定接口');
@@ -783,6 +1327,11 @@ return view.extend({
 
 		this.map = m;
 
-		return m.render();
+		return m.render().then(L.bind(function(node) {
+			if (isUpdateProgressRunning(this.updateProgress))
+				startUpdatePolling(this);
+
+			return node;
+		}, this));
 	}
 });

@@ -17,35 +17,36 @@
 - 支持 IP/CIDR 与端口范围黑白名单过滤规则
 - 支持每天、每周、按小时定时重启
 - 支持 FakeSIP 内置异步文件日志线程与按大小自动轮转，LuCI 只读取最近日志片段，避免大日志拖慢页面
-- LuCI 页面提供状态查看、启动、停止、重启、更新定时任务、清理残留规则和最近日志查看
+- LuCI 页面提供版本显示、在线更新、状态查看、启动、停止、重启、更新定时任务、清理残留规则和最近日志查看
 
 ## 目标环境
 
 主要面向：
 
-- ImmortalWrt 24.10.5
-- mt798x / `mediatek/filogic`
+- OpenWrt 24.10 / 25.12
+- ImmortalWrt 24.10.5 / 24.10.6
+- mt798x / `mediatek/filogic`，并通过 release 工作流覆盖多个常见 target
 - firewall4 / nftables
 
 ## GitHub Actions 自动构建
 
-仓库内置 GitHub Actions：
+仓库内置两个 GitHub Actions：
 
-- workflow 文件：`.github/workflows/build-ipk.yml`
-- 触发方式：`push`、`pull_request`、`workflow_dispatch`
-- 默认 SDK：`immortalwrt-sdk-24.10.5-mediatek-filogic_gcc-13.3.0_musl.Linux-x86_64.tar.zst`
+- `.github/workflows/build-ipk.yml`：日常 push / PR 构建，默认使用 ImmortalWrt 24.10.5 `mediatek/filogic` SDK。
+- `.github/workflows/release.yml`：`v*` tag 或手动触发发布，构建 OpenWrt / ImmortalWrt 多版本、多 target 的发布包。
 
-构建完成后会上传以下 Artifact：
+Release 工作流默认覆盖：
 
-- `fakesip_*.ipk`
-- `luci-app-fakesip_*.ipk`
-- `sha256sums.txt`
+- OpenWrt 24.10.7：`.ipk`
+- OpenWrt 25.12.5：`.apk`
+- ImmortalWrt 24.10.5 / 24.10.6：`.ipk`
+- `x86/64`、`mediatek/filogic`、`ramips/mt7621`、`ath79/generic`、`ipq40xx/generic`、`ipq806x/generic`、`qualcommax/ipq807x`、`bcm27xx/bcm2711`、`rockchip/armv8`
 
-Artifact 名称类似：
+每个 release 会上传：
 
-```text
-fakesip-ipk-immortalwrt-24.10.5-mediatek-filogic
-```
+- 单独的 `fakesip` / `luci-app-fakesip` 安装包
+- 每个 target 的 bundle、manifest 和 sha256 校验文件
+- 顶层 `manifest.json` 与 `sha256sums.txt`
 
 ## 手动作为 feed 构建
 
@@ -81,7 +82,7 @@ make package/fakesip/compile V=s
 make package/luci-app-fakesip/compile V=s
 ```
 
-生成的 IPK 通常位于：
+生成的安装包通常位于：
 
 ```text
 bin/packages/<arch>/fakesip/
@@ -89,14 +90,24 @@ bin/packages/<arch>/fakesip/
 
 ## 安装
 
-把 GitHub Actions 或本地 SDK 生成的 IPK 上传到路由器后安装：
+把 GitHub Actions 或本地 SDK 生成的 IPK 上传到 OpenWrt 24.x / ImmortalWrt 后安装：
 
 ```sh
 opkg install fakesip_*.ipk luci-app-fakesip_*.ipk
 ```
 
+OpenWrt 25.x 使用 APK 包格式：
+
+```sh
+apk add --allow-untrusted fakesip-*.apk luci-app-fakesip-*.apk
+```
+
+安装 LuCI 后，也可以在 `服务 -> FakeSIP -> 更新` 中查看当前版本，点击“检查更新”从 GitHub Release 检查匹配当前发行版、版本和 target 的发布包，再执行在线更新。
+
 依赖未安装时，通常需要这些软件包：
 
+- `ca-bundle`
+- `uclient-fetch`
 - `libnetfilter-queue`
 - `libnfnetlink`
 - `libmnl`
