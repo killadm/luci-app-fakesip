@@ -18,7 +18,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install build dependencies
         run: |
@@ -76,10 +76,24 @@ jobs:
 
       - name: Build IPK packages
         working-directory: sdk
+        shell: bash
         run: |
           set -euo pipefail
-          make package/fakesip/compile V=s -j"$(nproc)"
-          make package/luci-app-fakesip/compile V=s -j"$(nproc)"
+          mkdir -p "${GITHUB_WORKSPACE}/build-logs"
+
+          log="${GITHUB_WORKSPACE}/build-logs/build.log"
+
+          echo "::group::make package/fakesip/compile package/luci-app-fakesip/compile"
+          if make -j"$(nproc)" package/fakesip/compile package/luci-app-fakesip/compile >"${log}" 2>&1; then
+            tail -n 80 "${log}" || true
+            echo "::endgroup::"
+          else
+            rc=$?
+            echo "::error::make packages failed; full log is attached as build.log"
+            tail -n 300 "${log}" || true
+            echo "::endgroup::"
+            exit "${rc}"
+          fi
 
       - name: Collect IPK artifacts
         run: |
@@ -93,8 +107,17 @@ jobs:
           sha256sum artifacts/*.ipk > artifacts/sha256sums.txt
 
       - name: Upload IPK artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: fakesip-ipk-immortalwrt-24.10.5-mediatek-filogic
           path: artifacts/
           if-no-files-found: error
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-logs-immortalwrt-24.10.5-mediatek-filogic
+          path: build-logs/
+          if-no-files-found: ignore
+          retention-days: 7
