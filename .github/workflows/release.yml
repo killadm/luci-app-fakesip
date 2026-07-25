@@ -156,7 +156,7 @@ jobs:
     needs: prepare
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 18
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
 
     steps:
@@ -260,27 +260,19 @@ jobs:
           set -euo pipefail
           mkdir -p "${GITHUB_WORKSPACE}/build-logs"
 
-          run_make() {
-            local name="$1"
-            shift
-            local log="${GITHUB_WORKSPACE}/build-logs/${name}.log"
+          log="${GITHUB_WORKSPACE}/build-logs/build.log"
 
-            echo "::group::make $*"
-            if make "$@" >"${log}" 2>&1; then
-              tail -n 80 "${log}" || true
-              echo "::endgroup::"
-              return 0
-            else
-              local rc=$?
-              echo "::error::make $* failed; full log is attached as ${name}.log"
-              tail -n 300 "${log}" || true
-              echo "::endgroup::"
-              return "${rc}"
-            fi
-          }
-
-          run_make fakesip package/fakesip/compile -j"$(nproc)"
-          run_make luci-app-fakesip package/luci-app-fakesip/compile -j"$(nproc)"
+          echo "::group::make package/fakesip/compile package/luci-app-fakesip/compile"
+          if make -j"$(nproc)" package/fakesip/compile package/luci-app-fakesip/compile >"${log}" 2>&1; then
+            tail -n 80 "${log}" || true
+            echo "::endgroup::"
+          else
+            rc=$?
+            echo "::error::make packages failed; full log is attached as build.log"
+            tail -n 300 "${log}" || true
+            echo "::endgroup::"
+            exit "${rc}"
+          fi
 
       - name: Collect release assets
         shell: bash
