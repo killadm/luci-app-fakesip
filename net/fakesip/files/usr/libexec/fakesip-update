@@ -594,7 +594,7 @@ install_downloaded_packages() {
 
 	files=""
 	for asset in $REMOTE_FILES; do
-		pkg_file="$(find "$extract_dir" -name "$asset" -print -quit)"
+		pkg_file="$(find "$extract_dir" -name "$asset" -print | head -1)"
 		if [ -n "$pkg_file" ]; then
 			files="$files $pkg_file"
 		fi
