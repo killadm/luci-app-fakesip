@@ -508,8 +508,7 @@ function renderFilterOrderHelp() {
 	return E('div', { 'class': 'fakesip-filter-help' }, [
 		E('ul', {}, [
 			E('li', {}, [ '只有黑名单：默认都处理，命中 ', E('code', {}, [ 'deny' ]), ' 的不处理。' ]),
-			E('li', {}, [ '只有 IP 白名单：只处理源 IP 或目的 IP 命中的流量。' ]),
-			E('li', {}, [ '只有端口白名单：只处理源端口或目的端口命中的流量。' ]),
+			E('li', {}, [ '只有 IP/端口 白名单：只处理源 IP/端口 或目的 IP/端口 命中的流量。' ]),
 			E('li', {}, [ '同时有 IP 白名单和端口白名单：必须 IP 命中且端口命中才处理。' ]),
 			E('li', {}, [ '同时命中 ', E('code', {}, [ 'allow' ]), ' 和 ', E('code', {}, [ 'deny' ]), '：按 ', E('code', {}, [ 'deny' ]), ' 处理，不生成 FakeSIP 混淆包。' ])
 		])
