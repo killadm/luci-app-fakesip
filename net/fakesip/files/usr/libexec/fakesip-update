@@ -147,12 +147,20 @@ acquire_update_lock() {
 }
 
 progress_normalize() {
-	local running
+	local running started_at now age
 	local finished_at
 
 	running="$(progress_read running 0)"
 	finished_at="$(progress_read finished_at "")"
 	if [ "$running" = "1" ] && [ -z "$finished_at" ] && ! progress_pid_running; then
+		started_at="$(progress_read started_at "")"
+		now="$(now_ts)"
+		case "$started_at:$now" in
+			[0-9]*:[0-9]*)
+				age=$((now - started_at))
+				[ "$age" -lt 5 ] && return 0
+				;;
+		esac
 		progress_finish 0 1 failed "升级进程已退出，未写入完成状态"
 		release_update_lock
 	fi
@@ -314,6 +322,69 @@ package_arch() {
 		apk) apk_arch "$1" ;;
 		*) echo "" ;;
 	esac
+}
+
+version_compare() {
+	local left="$1"
+	local op="$2"
+	local right="$3"
+	local apk_result
+
+	case "$SYS_PKG_MANAGER" in
+		opkg)
+			opkg compare-versions "$left" "$op" "$right" >/dev/null 2>&1
+			return $?
+			;;
+		apk)
+			case "$op" in
+				'>') apk version --test "$left" gt "$right" >/dev/null 2>&1 && return 0 ;;
+				'<') apk version --test "$left" lt "$right" >/dev/null 2>&1 && return 0 ;;
+				'=') apk version --test "$left" eq "$right" >/dev/null 2>&1 && return 0 ;;
+			esac
+
+			apk_result="$(apk version -t "$left" "$right" 2>/dev/null)"
+			case "$op:$apk_result" in
+				'>:>'|'<:<'|'=:='|'>:1'|'<:-1'|'=:0') return 0 ;;
+			esac
+			;;
+	esac
+
+	case "$op" in
+		'=') [ "$left" = "$right" ] && return 0 ;;
+		'>')
+			if command -v sort >/dev/null 2>&1 &&
+			   printf '%s\n%s\n' "$right" "$left" | sort -V >/dev/null 2>&1; then
+				[ "$(printf '%s\n%s\n' "$right" "$left" | sort -V | tail -n 1)" = "$left" ] &&
+					[ "$left" != "$right" ] && return 0
+			fi
+			;;
+		'<')
+			if command -v sort >/dev/null 2>&1 &&
+			   printf '%s\n%s\n' "$left" "$right" | sort -V >/dev/null 2>&1; then
+				[ "$(printf '%s\n%s\n' "$left" "$right" | sort -V | head -n 1)" = "$left" ] &&
+					[ "$left" != "$right" ] && return 0
+			fi
+			;;
+	esac
+
+	return 1
+}
+
+remote_version_relation() {
+	local local_version="$1"
+
+	[ -n "$local_version" ] || {
+		echo missing
+		return 0
+	}
+
+	if version_compare "$REMOTE_PACKAGE_VERSION" '>' "$local_version"; then
+		echo newer
+	elif version_compare "$REMOTE_PACKAGE_VERSION" '<' "$local_version"; then
+		echo older
+	else
+		echo same
+	fi
 }
 
 read_local_versions() {
@@ -673,6 +744,7 @@ _select_build_fields() {
 
 check_latest() {
 	local manifest_json
+	local fakesip_relation luci_relation
 
 	LATEST_CHECKED=1
 	LATEST_SUPPORTED=0
@@ -718,8 +790,14 @@ check_latest() {
 	fi
 
 	if [ "$LATEST_SUPPORTED" -eq 1 ]; then
-		if [ "$FAKESIP_VERSION" != "$REMOTE_PACKAGE_VERSION" ] ||
-		   [ "$LUCI_VERSION" != "$REMOTE_PACKAGE_VERSION" ]; then
+		fakesip_relation="$(remote_version_relation "$FAKESIP_VERSION")"
+		luci_relation="$(remote_version_relation "$LUCI_VERSION")"
+
+		if [ "$fakesip_relation" = "older" ] || [ "$luci_relation" = "older" ]; then
+			UPDATE_AVAILABLE=0
+			LATEST_REASON="当前安装版本高于发布包版本 ${REMOTE_PACKAGE_VERSION}"
+		elif [ "$fakesip_relation" = "newer" ] || [ "$luci_relation" = "newer" ] ||
+		     [ "$fakesip_relation" = "missing" ] || [ "$luci_relation" = "missing" ]; then
 			UPDATE_AVAILABLE=1
 			LATEST_REASON="发现可用更新"
 		else
@@ -885,9 +963,27 @@ run_background_install() {
 	release_update_lock
 }
 
-start_background_install() {
+spawn_background_install() {
+	local script_path="$0"
 	local bg_pid
 
+	case "$script_path" in
+		/*) ;;
+		*) script_path="$(command -v "$script_path" 2>/dev/null || printf '%s' "$script_path")" ;;
+	esac
+
+	rm -f "${PROGRESS_DIR}/pid"
+	if command -v start-stop-daemon >/dev/null 2>&1 &&
+	   start-stop-daemon -S -b -m -p "${PROGRESS_DIR}/pid" -x "$script_path" -- install-run >/dev/null 2>&1; then
+		return 0
+	fi
+
+	("$script_path" install-run </dev/null >/dev/null 2>&1) &
+	bg_pid="$!"
+	progress_write pid "$bg_pid"
+}
+
+start_background_install() {
 	if ! acquire_update_lock; then
 		emit_progress_response 1 install-start "已有在线更新任务正在运行"
 		return 0
@@ -899,9 +995,13 @@ start_background_install() {
 		return 1
 	}
 
-	(run_background_install >/dev/null 2>&1) &
-	bg_pid="$!"
-	progress_write pid "$bg_pid"
+	if ! spawn_background_install; then
+		progress_finish 0 1 failed "无法启动后台在线更新任务"
+		release_update_lock
+		emit_progress_response 0 install-start "无法启动后台在线更新任务"
+		return 1
+	fi
+
 	emit_progress_response 1 install-start "在线更新已开始"
 }
 
@@ -931,6 +1031,9 @@ case "$COMMAND" in
 		;;
 	install-start)
 		start_background_install || exit 1
+		;;
+	install-run)
+		run_background_install
 		;;
 	progress)
 		emit_progress_response 1 progress "已读取在线更新进度"

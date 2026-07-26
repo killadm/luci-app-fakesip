@@ -322,6 +322,28 @@ function startUpdatePolling(viewObj) {
 	return pollUpdateProgress(viewObj);
 }
 
+function recoverStartedUpdate(viewObj, fallbackData) {
+	return execUpdateHelper('progress').then(function(progressData) {
+		var progress = getProgressPayload(progressData);
+
+		viewObj.updateProgress = progress;
+		if (isUpdateProgressRunning(progress) || hasUpdateProgress(progress))
+			return startUpdatePolling(viewObj);
+
+		updateActionPending = false;
+		replaceUpdatePanel(viewObj, viewObj.updateInfo);
+		notifyUpdateResult(fallbackData, 'install');
+	}, function() {
+		updateActionPending = false;
+		replaceUpdatePanel(viewObj, viewObj.updateInfo);
+		notifyUpdateResult(fallbackData, 'install');
+	});
+}
+
+function isRequestTimeoutMessage(message) {
+	return /timeout|timed out/i.test(String(message || ''));
+}
+
 function getUpdateStateLabel(updateInfo) {
 	var latest = updateInfo && updateInfo.latest ? updateInfo.latest : {};
 
@@ -435,6 +457,12 @@ function runUpdateCommand(viewObj, command) {
 
 				viewObj.updateProgress = progress;
 				if (!asBool(data.ok) && !isUpdateProgressRunning(progress)) {
+					if (hasUpdateProgress(progress))
+						return startUpdatePolling(viewObj);
+
+					if (isRequestTimeoutMessage(data.message))
+						return recoverStartedUpdate(viewObj, data);
+
 					updateActionPending = false;
 					replaceUpdatePanel(viewObj, viewObj.updateInfo);
 					notifyUpdateResult(data, command);
@@ -501,6 +529,7 @@ function renderUpdatePanel(viewObj) {
 	var isUpdateAvailable = checked && asBool(latest.supported) && asBool(latest.update_available);
 	var latestVersion = latest.package_version || (checked ? '-' : '未检查');
 	var progressRunning = isUpdateProgressRunning(progress);
+	var showProgress = progressRunning || viewObj.updateProgressActive || (progress && progress.stage === 'failed');
 	var msg = progressRunning ? '' : (checked ? (latest.reason || (updateInfo && updateInfo.message) || '') : '');
 	var metaChildren = [ getSystemText(updateInfo) ];
 	var btnText, btnAction, btnClass, btnTitle, btnDisabled;
@@ -558,7 +587,7 @@ function renderUpdatePanel(viewObj) {
 			E('button', btnProps, [ btnText ]),
 			msg ? E('span', { 'class': 'fakesip-update-status-text' }, [ msg ]) : null
 		].filter(function(el) { return el != null; })),
-		renderUpdateProgress(progress)
+		showProgress ? renderUpdateProgress(progress) : null
 	].filter(function(el) { return el != null; }));
 }
 
