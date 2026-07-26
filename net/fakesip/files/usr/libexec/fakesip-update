@@ -8,6 +8,10 @@ GITHUB_DOWNLOAD_BASE="https://github.com/${GITHUB_REPO}/releases/download"
 
 PACKAGES="fakesip luci-app-fakesip"
 TMP_DIR=""
+PROGRESS_DIR="/tmp/fakesip-update"
+PROGRESS_LOG="${PROGRESS_DIR}/install.log"
+LOCK_DIR="/tmp/fakesip-update.lock"
+PROGRESS_ENABLED=0
 
 if [ -r /usr/share/libubox/jshn.sh ]; then
 	. /usr/share/libubox/jshn.sh
@@ -28,6 +32,165 @@ lower() {
 
 target_slug() {
 	printf '%s' "$1" | tr '/' '-'
+}
+
+now_ts() {
+	date +%s 2>/dev/null || date
+}
+
+progress_mkdir() {
+	mkdir -p "$PROGRESS_DIR" 2>/dev/null
+}
+
+progress_write() {
+	local name="$1"
+	local value="$2"
+	local file="${PROGRESS_DIR}/${name}"
+
+	progress_mkdir || return 1
+	printf '%s\n' "$value" > "${file}.$$" && mv "${file}.$$" "$file"
+}
+
+progress_read() {
+	local name="$1"
+	local default="$2"
+	local file="${PROGRESS_DIR}/${name}"
+
+	if [ -r "$file" ]; then
+		sed -n '1p' "$file" 2>/dev/null
+		return
+	fi
+
+	printf '%s' "$default"
+}
+
+progress_tail_log() {
+	local count="${1:-160}"
+
+	[ -r "$PROGRESS_LOG" ] && tail -n "$count" "$PROGRESS_LOG" 2>/dev/null
+}
+
+progress_log() {
+	[ "${PROGRESS_ENABLED:-0}" -eq 1 ] || return 0
+	progress_mkdir || return 0
+	printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date)" "$*" >> "$PROGRESS_LOG"
+}
+
+progress_update() {
+	local stage="$1"
+	local message="$2"
+
+	[ "${PROGRESS_ENABLED:-0}" -eq 1 ] || return 0
+	progress_write stage "$stage"
+	progress_write message "$message"
+	progress_log "$message"
+}
+
+progress_finish() {
+	local ok="$1"
+	local exit_code="$2"
+	local stage="$3"
+	local message="$4"
+
+	progress_write stage "$stage"
+	progress_write message "$message"
+	progress_write ok "$ok"
+	progress_write exit_code "$exit_code"
+	progress_write finished_at "$(now_ts)"
+	progress_log "$message"
+	progress_write running 0
+}
+
+progress_reset() {
+	local started_at
+
+	progress_mkdir || return 1
+	: > "$PROGRESS_LOG"
+	started_at="$(now_ts)"
+	progress_write running 1
+	progress_write stage starting
+	progress_write message "正在准备在线更新"
+	progress_write ok 0
+	progress_write exit_code ""
+	progress_write started_at "$started_at"
+	progress_write finished_at ""
+	progress_write pid ""
+	printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date)" "正在准备在线更新" >> "$PROGRESS_LOG"
+}
+
+progress_pid_running() {
+	local pid
+
+	pid="$(progress_read pid "")"
+	case "$pid" in
+		''|*[!0-9]*) return 1 ;;
+	esac
+
+	[ -d "/proc/$pid" ]
+}
+
+release_update_lock() {
+	rmdir "$LOCK_DIR" 2>/dev/null || true
+}
+
+acquire_update_lock() {
+	if mkdir "$LOCK_DIR" 2>/dev/null; then
+		return 0
+	fi
+
+	if ! progress_pid_running; then
+		rmdir "$LOCK_DIR" 2>/dev/null || true
+		mkdir "$LOCK_DIR" 2>/dev/null && return 0
+	fi
+
+	return 1
+}
+
+progress_normalize() {
+	local running
+	local finished_at
+
+	running="$(progress_read running 0)"
+	finished_at="$(progress_read finished_at "")"
+	if [ "$running" = "1" ] && [ -z "$finished_at" ] && ! progress_pid_running; then
+		progress_finish 0 1 failed "升级进程已退出，未写入完成状态"
+		release_update_lock
+	fi
+}
+
+emit_progress_response() {
+	local ok="$1"
+	local command="$2"
+	local message="$3"
+	local running stage progress_message progress_ok exit_code started_at finished_at log
+
+	progress_normalize
+	running="$(progress_read running 0)"
+	stage="$(progress_read stage idle)"
+	progress_message="$(progress_read message "")"
+	progress_ok="$(progress_read ok 0)"
+	exit_code="$(progress_read exit_code "")"
+	started_at="$(progress_read started_at "")"
+	finished_at="$(progress_read finished_at "")"
+	log="$(progress_tail_log 160)"
+	[ -n "$message" ] || message="$progress_message"
+
+	json_init
+	json_add_boolean ok "$ok"
+	json_add_string command "$command"
+	json_add_string message "$message"
+	json_add_object progress
+	json_add_boolean running "$running"
+	json_add_string stage "$stage"
+	json_add_string message "$progress_message"
+	json_add_boolean ok "$progress_ok"
+	json_add_string exit_code "$exit_code"
+	json_add_string started_at "$started_at"
+	json_add_string finished_at "$finished_at"
+	json_add_string log "$log"
+	json_close_object
+	json_dump
+	echo
 }
 
 fetch_stdout() {
@@ -574,12 +737,21 @@ download_selected_assets() {
 	TMP_DIR="$(mktemp -d /tmp/fakesip-update.XXXXXX)" || return 1
 
 	checksums_url="${GITHUB_DOWNLOAD_BASE}/${LATEST_TAG}/sha256sums.txt"
+	progress_update downloading "正在下载校验文件"
+	progress_log "下载地址：${checksums_url}"
 	download_file "$checksums_url" "$TMP_DIR/sha256sums.txt" || return 1
 
 	bundle_url="${GITHUB_DOWNLOAD_BASE}/${LATEST_TAG}/${REMOTE_BUNDLE}"
+	progress_update downloading "正在下载更新包 ${REMOTE_BUNDLE}"
+	progress_log "下载地址：${bundle_url}"
 	download_file "$bundle_url" "$TMP_DIR/${REMOTE_BUNDLE}" || return 1
 
-	(cd "$TMP_DIR" && grep -F "${REMOTE_BUNDLE}" sha256sums.txt | sha256sum -c -)
+	progress_update verifying "正在校验更新包"
+	if [ "${PROGRESS_ENABLED:-0}" -eq 1 ]; then
+		(cd "$TMP_DIR" && grep -F "${REMOTE_BUNDLE}" sha256sums.txt | sha256sum -c -) >> "$PROGRESS_LOG" 2>&1
+	else
+		(cd "$TMP_DIR" && grep -F "${REMOTE_BUNDLE}" sha256sums.txt | sha256sum -c -)
+	fi
 }
 
 install_downloaded_packages() {
@@ -619,9 +791,16 @@ install_downloaded_packages() {
 	esac
 }
 
-install_latest() {
-	local install_output
+run_package_manager_install() {
+	if [ "${PROGRESS_ENABLED:-0}" -eq 1 ]; then
+		install_downloaded_packages >> "$PROGRESS_LOG" 2>&1
+	else
+		INSTALL_LOG="$(install_downloaded_packages)"
+	fi
+}
 
+install_latest() {
+	progress_update checking "正在检查可用更新"
 	check_latest || return 1
 
 	if [ "$LATEST_SUPPORTED" -ne 1 ]; then
@@ -632,6 +811,7 @@ install_latest() {
 		return 0
 	fi
 
+	progress_update downloading "准备下载更新包"
 	download_selected_assets || {
 		LATEST_REASON="下载或校验更新包失败"
 		return 1
@@ -639,24 +819,90 @@ install_latest() {
 
 	service_is_running && SERVICE_WAS_RUNNING=1 || SERVICE_WAS_RUNNING=0
 	if [ "$SERVICE_WAS_RUNNING" -eq 1 ]; then
+		progress_update stopping "正在停止 FakeSIP 服务"
 		stop_service_if_running || {
 			LATEST_REASON="停止 FakeSIP 服务失败，未执行更新"
 			return 1
 		}
 	fi
 
-	if install_output="$(install_downloaded_packages)"; then
-		INSTALL_LOG="$install_output"
+	progress_update installing "正在安装更新包"
+	if run_package_manager_install; then
+		if [ "$SERVICE_WAS_RUNNING" -eq 1 ]; then
+			progress_update restarting "正在恢复 FakeSIP 服务"
+		fi
 		restart_service_if_needed || true
 		LATEST_REASON="在线更新完成"
 		check_latest >/dev/null 2>&1 || true
+		LATEST_REASON="在线更新完成"
 		return 0
 	fi
 
-	INSTALL_LOG="$install_output"
+	if [ "$SERVICE_WAS_RUNNING" -eq 1 ]; then
+		progress_update restarting "正在恢复 FakeSIP 服务"
+	fi
 	restart_service_if_needed || true
 	LATEST_REASON="包管理器安装失败"
 	return 1
+}
+
+background_exit() {
+	local code="$?"
+
+	if [ "${PROGRESS_DONE:-0}" -ne 1 ]; then
+		progress_finish 0 "$code" failed "在线更新异常中断"
+		release_update_lock
+	fi
+
+	cleanup
+}
+
+background_abort() {
+	progress_finish 0 1 failed "在线更新被中断"
+	PROGRESS_DONE=1
+	release_update_lock
+	cleanup
+	exit 1
+}
+
+run_background_install() {
+	PROGRESS_ENABLED=1
+	PROGRESS_DONE=0
+	trap background_exit EXIT
+	trap background_abort INT TERM
+
+	load_system_info
+	read_local_versions
+
+	if install_latest; then
+		PROGRESS_DONE=1
+		progress_finish 1 0 finished "${LATEST_REASON:-在线更新完成}"
+	else
+		PROGRESS_DONE=1
+		progress_finish 0 1 failed "${LATEST_REASON:-在线更新失败}"
+	fi
+
+	release_update_lock
+}
+
+start_background_install() {
+	local bg_pid
+
+	if ! acquire_update_lock; then
+		emit_progress_response 1 install-start "已有在线更新任务正在运行"
+		return 0
+	fi
+
+	progress_reset || {
+		release_update_lock
+		emit_progress_response 0 install-start "无法初始化在线更新进度状态"
+		return 1
+	}
+
+	(run_background_install >/dev/null 2>&1) &
+	bg_pid="$!"
+	progress_write pid "$bg_pid"
+	emit_progress_response 1 install-start "在线更新已开始"
 }
 
 COMMAND="${1:-status}"
@@ -683,8 +929,14 @@ case "$COMMAND" in
 			exit 1
 		fi
 		;;
+	install-start)
+		start_background_install || exit 1
+		;;
+	progress)
+		emit_progress_response 1 progress "已读取在线更新进度"
+		;;
 	*)
-		emit_response 0 "$COMMAND" "Usage: $0 {status|check|install}"
+		emit_response 0 "$COMMAND" "Usage: $0 {status|check|install|install-start|progress}"
 		exit 1
 		;;
 esac

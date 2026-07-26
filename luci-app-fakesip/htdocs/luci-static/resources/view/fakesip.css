@@ -32,6 +32,28 @@
 	overflow-wrap: anywhere;
 }
 
+.fakesip-update-progress {
+	margin-top: .75em;
+	width: 100%;
+	box-sizing: border-box;
+}
+
+.fakesip-update-progress-head {
+	display: flex;
+	gap: .75em;
+	flex-wrap: wrap;
+	align-items: center;
+	margin-bottom: .5em;
+}
+
+.fakesip-update-log {
+	width: 100%;
+	box-sizing: border-box;
+	max-height: 20em;
+	overflow: auto;
+	white-space: pre-wrap;
+}
+
 .fakesip-log-panel {
 	width: 100%;
 	box-sizing: border-box;

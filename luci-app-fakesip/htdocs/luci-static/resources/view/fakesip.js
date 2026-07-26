@@ -19,6 +19,7 @@ var initActionPending = false;
 var updateActionPending = false;
 var updatePanelId = 'fakesip-update-panel';
 var updateHelper = '/usr/libexec/fakesip-update';
+var updatePollInterval = 1500;
 var stylesheetId = 'fakesip-view-stylesheet';
 
 function loadStylesheet() {
@@ -212,6 +213,115 @@ function execUpdateHelper(command) {
 	});
 }
 
+function getProgressPayload(data) {
+	return data && data.progress && typeof data.progress === 'object' ? data.progress : {};
+}
+
+function isUpdateProgressRunning(progress) {
+	return asBool(progress && progress.running);
+}
+
+function hasUpdateProgress(progress) {
+	return !!(progress && (isUpdateProgressRunning(progress) || progress.stage || progress.message || progress.log));
+}
+
+function getProgressStageText(stage) {
+	return ({
+		'starting': '准备中',
+		'checking': '检查更新',
+		'downloading': '下载中',
+		'verifying': '校验中',
+		'stopping': '停止服务',
+		'installing': '安装中',
+		'restarting': '恢复服务',
+		'finished': '已完成',
+		'failed': '已失败',
+		'idle': '未运行'
+	})[stage] || '处理中';
+}
+
+function stopUpdatePolling(viewObj) {
+	if (viewObj.updatePollTimer) {
+		window.clearTimeout(viewObj.updatePollTimer);
+		viewObj.updatePollTimer = null;
+	}
+}
+
+function scheduleUpdatePoll(viewObj) {
+	stopUpdatePolling(viewObj);
+	viewObj.updatePollTimer = window.setTimeout(function() {
+		pollUpdateProgress(viewObj);
+	}, updatePollInterval);
+}
+
+function notifyFinishedProgress(progress) {
+	notifyUpdateResult({
+		ok: asBool(progress && progress.ok),
+		message: (progress && progress.message) || (asBool(progress && progress.ok) ? '在线更新完成' : '在线更新失败'),
+		log: progress && progress.log
+	}, 'install');
+}
+
+function handleUpdatePollFailure(viewObj, message) {
+	viewObj.updatePollFailures = (viewObj.updatePollFailures || 0) + 1;
+
+	if (viewObj.updatePollFailures <= 3) {
+		scheduleUpdatePoll(viewObj);
+		return;
+	}
+
+	updateActionPending = false;
+	viewObj.updateProgressActive = false;
+	stopUpdatePolling(viewObj);
+	replaceUpdatePanel(viewObj, viewObj.updateInfo);
+	notifyUpdateResult({
+		ok: false,
+		message: message || '读取升级进度失败'
+	}, 'install');
+}
+
+function pollUpdateProgress(viewObj) {
+	return execUpdateHelper('progress').then(function(data) {
+		var progress = getProgressPayload(data);
+		var running = isUpdateProgressRunning(progress);
+
+		if (!asBool(data.ok) && !data.progress)
+			return handleUpdatePollFailure(viewObj, data.message);
+
+		viewObj.updatePollFailures = 0;
+		viewObj.updateProgress = progress;
+		updateActionPending = running;
+		replaceUpdatePanel(viewObj, viewObj.updateInfo);
+
+		if (running) {
+			scheduleUpdatePoll(viewObj);
+			return;
+		}
+
+		stopUpdatePolling(viewObj);
+		if (viewObj.updateProgressActive) {
+			viewObj.updateProgressActive = false;
+			notifyFinishedProgress(progress);
+
+			if (asBool(progress.ok)) {
+				window.setTimeout(function() {
+					window.location.reload();
+				}, 1200);
+			}
+		}
+	}, function(err) {
+		return handleUpdatePollFailure(viewObj, String(err && (err.message || err) || '读取升级进度失败'));
+	});
+}
+
+function startUpdatePolling(viewObj) {
+	viewObj.updateProgressActive = true;
+	viewObj.updatePollFailures = 0;
+	updateActionPending = true;
+	replaceUpdatePanel(viewObj, viewObj.updateInfo);
+	return pollUpdateProgress(viewObj);
+}
+
 function getUpdateStateLabel(updateInfo) {
 	var latest = updateInfo && updateInfo.latest ? updateInfo.latest : {};
 
@@ -319,16 +429,36 @@ function runUpdateCommand(viewObj, command) {
 		updateActionPending = true;
 		replaceUpdatePanel(viewObj, viewObj.updateInfo);
 
+		if (command === 'install') {
+			return execUpdateHelper('install-start').then(function(data) {
+				var progress = getProgressPayload(data);
+
+				viewObj.updateProgress = progress;
+				if (!asBool(data.ok) && !isUpdateProgressRunning(progress)) {
+					updateActionPending = false;
+					replaceUpdatePanel(viewObj, viewObj.updateInfo);
+					notifyUpdateResult(data, command);
+					return;
+				}
+
+				return startUpdatePolling(viewObj);
+			}, function(err) {
+				var data = {
+					ok: false,
+					command: command,
+					message: String(err && (err.message || err) || 'RPC 调用失败')
+				};
+
+				updateActionPending = false;
+				replaceUpdatePanel(viewObj, viewObj.updateInfo);
+				notifyUpdateResult(data, command);
+			});
+		}
+
 		return execUpdateHelper(command).then(function(data) {
 			updateActionPending = false;
 			replaceUpdatePanel(viewObj, data);
 			notifyUpdateResult(data, command);
-
-			if (command === 'install' && data.ok) {
-				window.setTimeout(function() {
-					window.location.reload();
-				}, 1200);
-			}
 		}, function(err) {
 			var data = {
 				ok: false,
@@ -343,19 +473,40 @@ function runUpdateCommand(viewObj, command) {
 	});
 }
 
+function renderUpdateProgress(progress) {
+	var running = isUpdateProgressRunning(progress);
+	var stage = progress && progress.stage ? progress.stage : 'idle';
+	var message = progress && progress.message ? progress.message : '';
+	var log = progress && progress.log ? progress.log : '';
+	var labelClass = running ? 'label warning' : (asBool(progress && progress.ok) ? 'label success' : 'label warning');
+
+	if (!hasUpdateProgress(progress) || (stage === 'idle' && !message && !log))
+		return null;
+
+	return E('div', { 'class': 'fakesip-update-progress' }, [
+		E('div', { 'class': 'fakesip-update-progress-head' }, [
+			E('span', { 'class': labelClass }, [ getProgressStageText(stage) ]),
+			message ? E('span', { 'class': 'fakesip-update-status-text' }, [ message ]) : null
+		].filter(function(el) { return el != null; })),
+		log ? E('pre', { 'class': 'fakesip-update-log' }, [ tailText(log, 120, '暂无升级日志') ]) : null
+	].filter(function(el) { return el != null; }));
+}
+
 function renderUpdatePanel(viewObj) {
 	var updateInfo = viewObj.updateInfo || {};
+	var progress = viewObj.updateProgress || {};
 	var latest = updateInfo.latest || {};
 	var state = getUpdateStateLabel(updateInfo);
 	var checked = asBool(latest.checked);
 	var isUpdateAvailable = checked && asBool(latest.supported) && asBool(latest.update_available);
 	var latestVersion = latest.package_version || (checked ? '-' : '未检查');
-	var msg = checked ? (latest.reason || (updateInfo && updateInfo.message) || '') : '';
+	var progressRunning = isUpdateProgressRunning(progress);
+	var msg = progressRunning ? '' : (checked ? (latest.reason || (updateInfo && updateInfo.message) || '') : '');
 	var metaChildren = [ getSystemText(updateInfo) ];
 	var btnText, btnAction, btnClass, btnTitle, btnDisabled;
 
-	if (updateActionPending) {
-		btnText = '处理中';
+	if (updateActionPending || progressRunning) {
+		btnText = progressRunning ? '升级中' : '处理中';
 		btnAction = null;
 		btnClass = 'cbi-button cbi-button-reload';
 		btnTitle = '';
@@ -406,17 +557,18 @@ function renderUpdatePanel(viewObj) {
 		E('div', { 'class': 'fakesip-action-group fakesip-update-actions' }, [
 			E('button', btnProps, [ btnText ]),
 			msg ? E('span', { 'class': 'fakesip-update-status-text' }, [ msg ]) : null
-		].filter(function(el) { return el != null; }))
-	]);
+		].filter(function(el) { return el != null; })),
+		renderUpdateProgress(progress)
+	].filter(function(el) { return el != null; }));
 }
 
-function tailText(text, count) {
+function tailText(text, count, fallback) {
 	var lines = String(text || '').trim().split(/\r?\n/);
 
 	if (lines.length > count)
 		lines = lines.slice(lines.length - count);
 
-	return lines.join('\n') || '暂无 FakeSIP 日志';
+	return lines.join('\n') || fallback || '暂无 FakeSIP 日志';
 }
 
 function renderLogPanel(text, count) {
@@ -730,6 +882,11 @@ function renderActionGroup(actions, footer) {
 return view.extend({
 	map: null,
 	silentOpt: null,
+	updateInfo: null,
+	updateProgress: null,
+	updateProgressActive: false,
+	updatePollTimer: null,
+	updatePollFailures: 0,
 
 	load: function() {
 		loadStylesheet();
@@ -740,7 +897,8 @@ return view.extend({
 				L.resolveDefault(fs.read('/etc/crontabs/root'), ''),
 				L.resolveDefault(fs.exec('/usr/libexec/fakesip-logread', [ 'system', '200' ]), { stdout: '' }),
 				L.resolveDefault(fs.exec('/usr/libexec/fakesip-logread', [ 'file', '200' ]), { stdout: '' }),
-				L.resolveDefault(fs.exec(updateHelper, [ 'status' ]), { stdout: '' })
+				L.resolveDefault(fs.exec(updateHelper, [ 'status' ]), { stdout: '' }),
+				L.resolveDefault(fs.exec(updateHelper, [ 'progress' ]), { stdout: '' })
 			]);
 		});
 	},
@@ -781,9 +939,16 @@ return view.extend({
 		var logOutput = data[2] && data[2].stdout ? data[2].stdout : '';
 		var fileLog = data[3] && data[3].stdout ? data[3].stdout : '';
 		var updateInfo = parseUpdateResult(data[4], 'status');
+		var progressInfo = parseUpdateResult(data[5], 'progress');
 		var m, s, o, p, f, enabledOpt, ifaceModeOpt, noHop, payloadTypeOpt, filterTypeOpt, silentOpt;
 
 		this.updateInfo = updateInfo;
+		this.updateProgress = getProgressPayload(progressInfo);
+		if (isUpdateProgressRunning(this.updateProgress)) {
+			updateActionPending = true;
+			this.updateProgressActive = true;
+		}
+
 		m = new form.Map('fakesip', 'FakeSIP');
 
 		s = m.section(form.NamedSection, 'main', 'fakesip');
@@ -1071,6 +1236,11 @@ return view.extend({
 
 		this.map = m;
 
-		return m.render();
+		return m.render().then(L.bind(function(node) {
+			if (isUpdateProgressRunning(this.updateProgress))
+				startUpdatePolling(this);
+
+			return node;
+		}, this));
 	}
 });
