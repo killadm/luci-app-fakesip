@@ -557,8 +557,13 @@ jobs:
           PY
 
           # Append changelog from git history
-          prev_tag="$(git tag --sort=-creatordate | grep -v '^manual-' | grep -B1 "^${RELEASE_TAG}$" | head -1)"
-          if [ "${prev_tag}" = "${RELEASE_TAG}" ]; then prev_tag=""; fi
+          prev_tag=""
+          found=0
+          for tag in $(git tag --sort=-creatordate 2>/dev/null); do
+            case "$tag" in manual-*) continue ;; esac
+            if [ "$found" = "1" ]; then prev_tag="$tag"; break; fi
+            [ "$tag" = "${RELEASE_TAG}" ] && found=1
+          done
           if [ -n "${prev_tag}" ]; then
             {
               echo ""
