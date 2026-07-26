@@ -259,6 +259,7 @@ jobs:
         working-directory: sdk
         run: |
           set -euo pipefail
+          sed -i '/^src-.* fakesip /d' feeds.conf.default
           echo "src-link fakesip ${GITHUB_WORKSPACE}" >> feeds.conf.default
           ./scripts/feeds update -a
 
