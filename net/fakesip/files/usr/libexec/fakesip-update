@@ -329,10 +329,22 @@ version_compare() {
 	local op="$2"
 	local right="$3"
 	local apk_result
+	local opkg_op
+
+	case "$op" in
+		'=') [ "$left" = "$right" ] && return 0 ;;
+		'>'|'<') [ "$left" = "$right" ] && return 1 ;;
+	esac
 
 	case "$SYS_PKG_MANAGER" in
 		opkg)
-			opkg compare-versions "$left" "$op" "$right" >/dev/null 2>&1
+			case "$op" in
+				'>') opkg_op='>>' ;;
+				'<') opkg_op='<<' ;;
+				'=') opkg_op='=' ;;
+				*) return 1 ;;
+			esac
+			opkg compare-versions "$left" "$opkg_op" "$right" >/dev/null 2>&1
 			return $?
 			;;
 		apk)
@@ -377,6 +389,11 @@ remote_version_relation() {
 		echo missing
 		return 0
 	}
+
+	if [ "$REMOTE_PACKAGE_VERSION" = "$local_version" ]; then
+		echo same
+		return 0
+	fi
 
 	if version_compare "$REMOTE_PACKAGE_VERSION" '>' "$local_version"; then
 		echo newer

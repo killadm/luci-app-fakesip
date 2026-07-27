@@ -11,6 +11,26 @@
 	box-sizing: border-box;
 }
 
+.fakesip-update-confirm-modal,
+.fakesip-update-confirm-modal .modal-dialog {
+	width: calc(100vw - 2em);
+	max-width: 42em;
+	box-sizing: border-box;
+}
+
+.fakesip-update-confirm {
+	max-width: 38em;
+	overflow-wrap: anywhere;
+}
+
+.fakesip-update-confirm .button-row {
+	display: flex;
+	gap: .5em;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	margin-top: 1em;
+}
+
 .fakesip-update-status-text {
 	margin-left: .75em;
 	overflow-wrap: anywhere;

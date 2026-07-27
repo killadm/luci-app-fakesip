@@ -262,6 +262,14 @@ function notifyFinishedProgress(progress) {
 	}, 'install');
 }
 
+function refreshUpdateInfoAfterInstall(viewObj) {
+	return execUpdateHelper('check').then(function(data) {
+		replaceUpdatePanel(viewObj, data);
+	}, function() {
+		replaceUpdatePanel(viewObj, viewObj.updateInfo);
+	});
+}
+
 function handleUpdatePollFailure(viewObj, message) {
 	viewObj.updatePollFailures = (viewObj.updatePollFailures || 0) + 1;
 
@@ -303,11 +311,8 @@ function pollUpdateProgress(viewObj) {
 			viewObj.updateProgressActive = false;
 			notifyFinishedProgress(progress);
 
-			if (asBool(progress.ok)) {
-				window.setTimeout(function() {
-					window.location.reload();
-				}, 1200);
-			}
+			if (asBool(progress.ok))
+				return refreshUpdateInfoAfterInstall(viewObj);
 		}
 	}, function(err) {
 		return handleUpdatePollFailure(viewObj, String(err && (err.message || err) || '读取升级进度失败'));
@@ -384,33 +389,35 @@ function confirmInstallUpdate(updateInfo) {
 
 	return new Promise(function(resolve) {
 		ui.showModal('确认在线更新', [
-			E('p', {}, [
-				'将从 GitHub Release 下载与当前系统完全匹配的 FakeSIP 安装包，并调用系统包管理器安装至 ',
-				E('strong', {}, [ version ]),
-				'。'
-			]),
-			E('p', {}, [
-				'安装前会校验 sha256；如果服务正在运行，会先停止并在安装完成后恢复运行。'
-			]),
-			E('div', { 'class': 'button-row' }, [
-				E('button', {
-					'class': 'btn cbi-button',
-					'type': 'button',
-					'click': function() {
-						ui.hideModal();
-						resolve(false);
-					}
-				}, [ '取消' ]), ' ',
-				E('button', {
-					'class': 'btn cbi-button cbi-button-apply important',
-					'type': 'button',
-					'click': function() {
-						ui.hideModal();
-						resolve(true);
-					}
-				}, [ '确认更新' ])
+			E('div', { 'class': 'fakesip-update-confirm' }, [
+				E('p', {}, [
+					'将从 GitHub Release 下载与当前系统完全匹配的 FakeSIP 安装包，并调用系统包管理器安装至 ',
+					E('strong', {}, [ version ]),
+					'。'
+				]),
+				E('p', {}, [
+					'安装前会校验 sha256；如果服务正在运行，会先停止并在安装完成后恢复运行。'
+				]),
+				E('div', { 'class': 'button-row' }, [
+					E('button', {
+						'class': 'btn cbi-button',
+						'type': 'button',
+						'click': function() {
+							ui.hideModal();
+							resolve(false);
+						}
+					}, [ '取消' ]), ' ',
+					E('button', {
+						'class': 'btn cbi-button cbi-button-apply important',
+						'type': 'button',
+						'click': function() {
+							ui.hideModal();
+							resolve(true);
+						}
+					}, [ '确认更新' ])
+				])
 			])
-		], 'cbi-modal');
+		], 'cbi-modal fakesip-update-confirm-modal');
 	});
 }
 
@@ -420,7 +427,9 @@ function notifyUpdateResult(data, command) {
 	var body = [ E('p', {}, [ data.message || '操作完成' ]) ];
 
 	if (data.log)
-		body.push(E('pre', { 'class': 'fakesip-notification-log' }, [ tailText(data.log, 80) ]));
+		body.push(E('pre', { 'class': 'fakesip-notification-log' }, [
+			command === 'install' ? tailTextNewestFirst(data.log, 80) : tailText(data.log, 80)
+		]));
 
 	if (command === 'check' && data.ok && data.latest && !asBool(data.latest.supported))
 		type = 'warning';
@@ -516,7 +525,7 @@ function renderUpdateProgress(progress) {
 			E('span', { 'class': labelClass }, [ getProgressStageText(stage) ]),
 			message ? E('span', { 'class': 'fakesip-update-status-text' }, [ message ]) : null
 		].filter(function(el) { return el != null; })),
-		log ? E('pre', { 'class': 'fakesip-update-log' }, [ tailText(log, 120, '暂无升级日志') ]) : null
+		log ? E('pre', { 'class': 'fakesip-update-log' }, [ tailTextNewestFirst(log, 120, '暂无升级日志') ]) : null
 	].filter(function(el) { return el != null; }));
 }
 
@@ -529,7 +538,8 @@ function renderUpdatePanel(viewObj) {
 	var isUpdateAvailable = checked && asBool(latest.supported) && asBool(latest.update_available);
 	var latestVersion = latest.package_version || (checked ? '-' : '未检查');
 	var progressRunning = isUpdateProgressRunning(progress);
-	var showProgress = progressRunning || viewObj.updateProgressActive || (progress && progress.stage === 'failed');
+	var showProgress = progressRunning || viewObj.updateProgressActive ||
+		(progress && (progress.stage === 'finished' || progress.stage === 'failed'));
 	var msg = progressRunning ? '' : (checked ? (latest.reason || (updateInfo && updateInfo.message) || '') : '');
 	var metaChildren = [ getSystemText(updateInfo) ];
 	var btnText, btnAction, btnClass, btnTitle, btnDisabled;
@@ -598,6 +608,15 @@ function tailText(text, count, fallback) {
 		lines = lines.slice(lines.length - count);
 
 	return lines.join('\n') || fallback || '暂无 FakeSIP 日志';
+}
+
+function tailTextNewestFirst(text, count, fallback) {
+	var lines = String(text || '').trim().split(/\r?\n/);
+
+	if (lines.length > count)
+		lines = lines.slice(lines.length - count);
+
+	return lines.reverse().join('\n') || fallback || '暂无 FakeSIP 日志';
 }
 
 function renderLogPanel(text, count) {
