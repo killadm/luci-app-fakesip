@@ -464,6 +464,8 @@ jobs:
     needs:
       - prepare
       - build
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
@@ -598,7 +600,7 @@ jobs:
       - name: Upload GitHub Release assets
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           RELEASE_NAME: ${{ needs.prepare.outputs.release_name }}
@@ -606,25 +608,39 @@ jobs:
         run: |
           set -euo pipefail
 
+          if ! gh api "repos/${GH_REPO}" >/dev/null 2>&1; then
+            echo "::error::Release token cannot access ${GH_REPO}; enable workflow contents:write permissions or add a RELEASE_TOKEN secret with repo/public_repo scope"
+            exit 1
+          fi
+
           prerelease_args=()
           if [[ "${PRERELEASE}" == "true" ]]; then
             prerelease_args+=(--prerelease)
           fi
 
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            gh release upload "${RELEASE_TAG}" \
+            if ! gh release upload "${RELEASE_TAG}" \
               release-assets/*.tar.gz \
               release-assets/manifest.json \
               release-assets/sha256sums.txt \
-              --clobber
-            gh release edit "${RELEASE_TAG}" --title "${RELEASE_NAME}" --notes-file release-notes.md "${prerelease_args[@]}"
+              --clobber; then
+              echo "::error::Failed to upload release assets; check contents:write permission or RELEASE_TOKEN"
+              exit 1
+            fi
+            if ! gh release edit "${RELEASE_TAG}" --title "${RELEASE_NAME}" --notes-file release-notes.md "${prerelease_args[@]}"; then
+              echo "::error::Failed to update release metadata; check contents:write permission or RELEASE_TOKEN"
+              exit 1
+            fi
           else
-            gh release create "${RELEASE_TAG}" \
+            if ! gh release create "${RELEASE_TAG}" \
               release-assets/*.tar.gz \
               release-assets/manifest.json \
               release-assets/sha256sums.txt \
               --title "${RELEASE_NAME}" \
               --notes-file release-notes.md \
               --target "${GITHUB_SHA}" \
-              "${prerelease_args[@]}"
+              "${prerelease_args[@]}"; then
+              echo "::error::Failed to create GitHub Release; enable workflow contents:write permissions or add a RELEASE_TOKEN secret with repo/public_repo scope"
+              exit 1
+            fi
           fi
