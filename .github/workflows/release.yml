@@ -186,7 +186,6 @@ jobs:
           key: sdk-${{ matrix.distro }}-${{ matrix.version }}-${{ matrix.target }}
 
       - name: Install build dependencies
-        if: steps.cache-sdk.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -283,6 +282,18 @@ jobs:
           CONFIG_PACKAGE_luci-app-fakesip=m
           EOF
           make defconfig
+
+      - name: Clean cached package outputs
+        working-directory: sdk
+        run: |
+          set -euo pipefail
+          make package/fakesip/clean package/luci-app-fakesip/clean >/dev/null 2>&1 || true
+          find bin/packages -type f \( \
+            -name 'fakesip_*.ipk' -o \
+            -name 'luci-app-fakesip_*.ipk' -o \
+            -name 'fakesip*.apk' -o \
+            -name 'luci-app-fakesip*.apk' \
+          \) -delete 2>/dev/null || true
 
       - name: Build packages
         working-directory: sdk
@@ -488,9 +499,12 @@ jobs:
               with manifest_path.open(encoding="utf-8") as handle:
                   builds.append(json.load(handle))
 
+          for manifest_path in sorted(root.glob("*.manifest.json")):
+              manifest_path.unlink()
+
           assets = []
           for path in sorted(root.iterdir()):
-              if not path.is_file() or path.name == "manifest.json":
+              if not path.is_file() or path.name == "manifest.json" or path.name.endswith(".manifest.json"):
                   continue
               assets.append({
                   "file": path.name,
@@ -511,11 +525,6 @@ jobs:
           with (root / "manifest.json").open("w", encoding="utf-8") as handle:
               json.dump(manifest, handle, indent=2, sort_keys=True)
               handle.write("\n")
-
-          # Clean up per-build manifest files before generating top-level checksums
-          for manifest_path in sorted(root.glob("*.manifest.json")):
-              if manifest_path.name != "manifest.json":
-                  manifest_path.unlink()
           PY
 
           (
