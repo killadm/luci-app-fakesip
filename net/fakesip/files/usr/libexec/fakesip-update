@@ -673,6 +673,7 @@ select_matching_build() {
 			json_get_var pv package_version
 
 			if [ "$distro" = "$SYS_DISTRO" ] &&
+			   [ "$target" = "$SYS_TARGET" ] &&
 			   [ "$format" = "$SYS_PACKAGE_FORMAT" ]; then
 				json_get_values file_list files
 				arch_match=0
@@ -826,6 +827,12 @@ check_latest() {
 	return 0
 }
 
+archive_has_unsafe_paths() {
+	local archive="$1"
+
+	tar -tzf "$archive" 2>/dev/null | grep -Eq '(^/|(^|/)\.\.(/|$))'
+}
+
 download_selected_assets() {
 	local checksums_url bundle_url
 
@@ -854,6 +861,12 @@ install_downloaded_packages() {
 
 	extract_dir="${TMP_DIR}/extract"
 	mkdir -p "$extract_dir"
+
+	if archive_has_unsafe_paths "$TMP_DIR/${REMOTE_BUNDLE}"; then
+		echo "unsafe archive entries found in ${REMOTE_BUNDLE}" >&2
+		return 1
+	fi
+
 	tar -xzf "$TMP_DIR/${REMOTE_BUNDLE}" -C "$extract_dir" || {
 		echo "failed to extract ${REMOTE_BUNDLE}" >&2
 		return 1
