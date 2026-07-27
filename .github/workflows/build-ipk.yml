@@ -63,8 +63,13 @@ jobs:
           cp -a "${GITHUB_WORKSPACE}/net" "${GITHUB_WORKSPACE}/luci-app-fakesip" "${feed_dir}/"
 
           sed -i '/^src-.* fakesip /d' feeds.conf.default
-          rm -rf feeds/fakesip
           echo "src-link fakesip ${feed_dir}" >> feeds.conf.default
+          awk '$1 ~ /^src-/ { print $2 }' feeds.conf.default | while read -r feed; do
+            case "${feed}" in
+              ''|*/*|*..*) continue ;;
+            esac
+            rm -rf "feeds/${feed}" "feeds/${feed}.index"
+          done
           ./scripts/feeds update -a
           for pkg in libmnl libnfnetlink libnetfilter-queue luci-base; do
             ./scripts/feeds install "${pkg}" || true
