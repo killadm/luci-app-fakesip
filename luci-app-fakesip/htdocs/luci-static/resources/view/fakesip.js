@@ -217,6 +217,15 @@ function getProgressPayload(data) {
 	return data && data.progress && typeof data.progress === 'object' ? data.progress : {};
 }
 
+function getInitialProgressPayload(data) {
+	var progress = getProgressPayload(data);
+
+	if (!isUpdateProgressRunning(progress) && progress.stage === 'finished' && asBool(progress.ok))
+		return {};
+
+	return progress;
+}
+
 function isUpdateProgressRunning(progress) {
 	return asBool(progress && progress.running);
 }
@@ -991,7 +1000,7 @@ return view.extend({
 		var m, s, o, p, f, enabledOpt, ifaceModeOpt, noHop, payloadTypeOpt, filterTypeOpt, silentOpt;
 
 		this.updateInfo = updateInfo;
-		this.updateProgress = getProgressPayload(progressInfo);
+		this.updateProgress = getInitialProgressPayload(progressInfo);
 		if (isUpdateProgressRunning(this.updateProgress)) {
 			updateActionPending = true;
 			this.updateProgressActive = true;

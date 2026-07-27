@@ -669,6 +669,7 @@ select_matching_build() {
 		for build_key in $build_keys; do
 			json_select "$build_key" || continue
 			json_get_var distro distro
+			json_get_var target target
 			json_get_var format package_format
 			json_get_var pv package_version
 
