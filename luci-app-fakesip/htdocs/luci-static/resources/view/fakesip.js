@@ -392,12 +392,26 @@ function renderReleaseValue(latest) {
 	return E('span', { 'class': 'fakesip-mono' }, [ tag ]);
 }
 
+function showFakesipModal(title, children) {
+	var args = [ title, children ];
+
+	for (var i = 2; i < arguments.length; i++) {
+		var classes = String(arguments[i] || '').trim().split(/\s+/);
+
+		for (var j = 0; j < classes.length; j++)
+			if (classes[j])
+				args.push(classes[j]);
+	}
+
+	return ui.showModal.apply(ui, args);
+}
+
 function confirmInstallUpdate(updateInfo) {
 	var latest = updateInfo && updateInfo.latest ? updateInfo.latest : {};
 	var version = latest.package_version || '最新版本';
 
 	return new Promise(function(resolve) {
-		ui.showModal('确认在线更新', [
+		showFakesipModal('确认在线更新', [
 			E('div', { 'class': 'fakesip-update-confirm' }, [
 				E('p', {}, [
 					'将从 GitHub Release 下载与当前系统完全匹配的 FakeSIP 安装包，并调用系统包管理器安装至 ',
@@ -412,22 +426,42 @@ function confirmInstallUpdate(updateInfo) {
 						'class': 'btn cbi-button',
 						'type': 'button',
 						'click': function() {
-							ui.hideModal();
 							resolve(false);
+							ui.hideModal();
 						}
 					}, [ '取消' ]), ' ',
 					E('button', {
 						'class': 'btn cbi-button cbi-button-apply important',
 						'type': 'button',
 						'click': function() {
-							ui.hideModal();
 							resolve(true);
+							ui.hideModal();
 						}
 					}, [ '确认更新' ])
 				])
 			])
-		], 'cbi-modal fakesip-update-confirm-modal');
+		], 'cbi-modal', 'fakesip-update-confirm-modal');
 	});
+}
+
+function addUpdateNotification(title, body, type) {
+	var node = ui.addNotification(title, body, type);
+	var button = node ? node.querySelector('button') : null;
+
+	if (button) {
+		button.addEventListener('click', function(ev) {
+			ev.preventDefault();
+			if (ev.stopImmediatePropagation)
+				ev.stopImmediatePropagation();
+			else
+				ev.stopPropagation();
+
+			if (node.parentNode)
+				node.parentNode.removeChild(node);
+		}, true);
+	}
+
+	return node;
 }
 
 function notifyUpdateResult(data, command) {
@@ -443,7 +477,7 @@ function notifyUpdateResult(data, command) {
 	if (command === 'check' && data.ok && data.latest && !asBool(data.latest.supported))
 		type = 'warning';
 
-	ui.addNotification(title, body, type);
+	addUpdateNotification(title, body, type);
 }
 
 function replaceUpdatePanel(viewObj, updateInfo) {
@@ -726,23 +760,23 @@ function renderFilterOrderHelp() {
 
 function confirmSilentDisabledSave() {
 	return new Promise(function(resolve) {
-		ui.showModal('确认关闭静默模式', [
+		showFakesipModal('确认关闭静默模式', [
 			E('p', {}, [ '关闭静默模式会逐包输出日志，可能快速增加日志量。除排查问题时外，日常使用建议开启。' ]),
 			E('div', { 'class': 'button-row' }, [
 				E('button', {
 					'class': 'btn cbi-button',
 					'type': 'button',
 					'click': function() {
-						ui.hideModal();
 						resolve(false);
+						ui.hideModal();
 					}
 				}, [ '取消' ]), ' ',
 				E('button', {
 					'class': 'btn cbi-button cbi-button-negative important',
 					'type': 'button',
 					'click': function() {
-						ui.hideModal();
 						resolve(true);
+						ui.hideModal();
 					}
 				}, [ '确认保存' ])
 			])
