@@ -17,6 +17,10 @@ var callServiceList = rpc.declare({
 var CRON_BEGIN = '# BEGIN fakesip scheduled restart';
 var initActionPending = false;
 var updateActionPending = false;
+var runtimeStatusId = 'fakesip-runtime-status';
+var serviceActionsId = 'fakesip-service-actions';
+var maintenanceActionsId = 'fakesip-maintenance-actions';
+var scheduleStateId = 'fakesip-schedule-state';
 var updatePanelId = 'fakesip-update-panel';
 var updateHelper = '/usr/libexec/fakesip-update';
 var updatePollInterval = 1500;
@@ -111,7 +115,7 @@ function getScheduleText(crontab) {
 function renderRuntimeStatus(enabled, status) {
 	if (!enabled && !status.running) {
 		return '' +
-			'<div class="cbi-value-field">' +
+			'<div id="' + runtimeStatusId + '" class="cbi-value-field">' +
 				'<span class="label warning">未启用</span>' +
 				'<span class="fakesip-status-meta">服务当前未运行</span>' +
 			'</div>';
@@ -126,12 +130,16 @@ function renderRuntimeStatus(enabled, status) {
 	var pidText = status.pids.length ? 'PID：' + status.pids.join(', ') : 'PID：-';
 
 	return '' +
-		'<div class="cbi-value-field">' +
+		'<div id="' + runtimeStatusId + '" class="cbi-value-field">' +
 			'<span class="' + labelClass + '">' + label + '</span>' +
 			'<span class="fakesip-status-meta">' + escapeHTML(pidText) + '</span>' +
 			'<span class="fakesip-status-meta">队列：' + escapeHTML(queue) + '</span>' +
 			'<span class="fakesip-status-meta">接口：' + escapeHTML(ifaceText || '-') + '</span>' +
 		'</div>';
+}
+
+function renderScheduleState(crontab) {
+	return '<div id="' + scheduleStateId + '" class="cbi-value-field">' + escapeHTML(getScheduleText(crontab)) + '</div>';
 }
 
 function asBool(value) {
@@ -901,7 +909,71 @@ function validateOptionalMark(sectionId, value) {
 	return validateMark(sectionId, value);
 }
 
-function runInitAction(action, successText) {
+function replaceElementById(id, newNode) {
+	var oldNode = document.getElementById(id);
+
+	if (!oldNode || !oldNode.parentNode || !newNode)
+		return false;
+
+	oldNode.parentNode.replaceChild(newNode, oldNode);
+	return true;
+}
+
+function htmlToNode(html) {
+	var wrapper = document.createElement('div');
+
+	wrapper.innerHTML = html;
+	return wrapper.firstElementChild;
+}
+
+function replaceHtmlElement(id, html) {
+	return replaceElementById(id, htmlToNode(html));
+}
+
+function refreshInlineStatus(viewObj) {
+	return Promise.all([
+		L.resolveDefault(callServiceList('fakesip'), {}),
+		L.resolveDefault(fs.read('/etc/crontabs/root'), '')
+	]).then(function(data) {
+		var serviceEnabled = uci.get('fakesip', 'main', 'enabled') === '1';
+		var serviceStatus = getServiceStatus(data[0]);
+		var crontab = data[1] || '';
+
+		if (viewObj) {
+			viewObj.serviceEnabled = serviceEnabled;
+			viewObj.serviceStatus = serviceStatus;
+			viewObj.crontab = crontab;
+		}
+
+		replaceHtmlElement(runtimeStatusId, renderRuntimeStatus(serviceEnabled, serviceStatus));
+		replaceElementById(serviceActionsId, renderServiceActions(serviceStatus, viewObj));
+		replaceElementById(maintenanceActionsId, renderMaintenanceActions(serviceEnabled, serviceStatus, crontab, viewObj));
+		replaceHtmlElement(scheduleStateId, renderScheduleState(crontab));
+	});
+}
+
+function delay(ms) {
+	return new Promise(function(resolve) {
+		window.setTimeout(resolve, ms);
+	});
+}
+
+function renderServiceActions(serviceStatus, viewObj) {
+	return renderActionGroup([
+		{ title: '启动服务', style: 'apply', action: 'start_now', success: 'FakeSIP 已启动', label: '启动', disabled: serviceStatus.running },
+		{ title: '停止服务', style: 'reset', action: 'stop_now', success: 'FakeSIP 已停止', label: '停止', disabled: !serviceStatus.running },
+		{ title: '重启服务', style: 'reload', action: 'restart_now', success: 'FakeSIP 已重启', label: '重启', disabled: !serviceStatus.running }
+	], null, serviceActionsId, viewObj);
+}
+
+function renderMaintenanceActions(serviceEnabled, serviceStatus, crontab, viewObj) {
+	return renderActionGroup([
+		{ title: '更新定时任务', style: 'apply', action: 'update_cron', success: '定时任务已更新', label: '更新', disabled: !serviceEnabled },
+		{ title: '清理残留规则', style: 'remove', action: 'cleanup_rules', success: '残留规则清理完成', label: '清理', disabled: serviceStatus.running }
+	], '定时重启：' + getScheduleText(crontab), maintenanceActionsId, viewObj);
+}
+
+function runInitAction(action, successText, viewObj) {
 	return fs.exec('/etc/init.d/fakesip', [ action ]).then(function(res) {
 		if (res.code !== 0) {
 			ui.addNotification('操作失败', E('pre', { 'class': 'fakesip-notification-log' },
@@ -911,11 +983,11 @@ function runInitAction(action, successText) {
 
 		ui.addNotification(null, E('p', successText), 'info');
 
-		return new Promise(function(resolve) {
-			window.setTimeout(function() {
-				window.location.reload();
-				resolve();
-			}, 900);
+		return delay(700).then(function() {
+			return refreshInlineStatus(viewObj).catch(function(err) {
+				ui.addNotification('状态刷新失败', E('pre', { 'class': 'fakesip-notification-log' },
+					String(err && (err.message || err) || 'RPC 调用失败')), 'warning');
+			});
 		});
 	}).catch(function(err) {
 		ui.addNotification('操作失败', E('pre', { 'class': 'fakesip-notification-log' },
@@ -923,7 +995,8 @@ function runInitAction(action, successText) {
 	});
 }
 
-function renderActionGroup(actions, footer) {
+function renderActionGroup(actions, footer, id, viewObj) {
+	var groupProps = {};
 	var buttons = E('div', {
 		'class': 'fakesip-action-group'
 	}, actions.map(function(action) {
@@ -941,7 +1014,7 @@ function renderActionGroup(actions, footer) {
 				initActionPending = true;
 				button.disabled = true;
 
-				return runInitAction(action.action, action.success).then(function(res) {
+				return runInitAction(action.action, action.success, viewObj).then(function(res) {
 					initActionPending = false;
 					button.disabled = false;
 					return res;
@@ -959,10 +1032,16 @@ function renderActionGroup(actions, footer) {
 		return E('button', props, [ action.label || action.title ]);
 	}));
 
-	if (!footer)
+	if (!footer) {
+		if (id)
+			buttons.id = id;
 		return buttons;
+	}
 
-	return E('div', {}, [
+	if (id)
+		groupProps.id = id;
+
+	return E('div', groupProps, [
 		buttons,
 		E('div', {
 			'class': 'fakesip-action-footer'
@@ -973,6 +1052,9 @@ function renderActionGroup(actions, footer) {
 return view.extend({
 	map: null,
 	silentOpt: null,
+	serviceEnabled: false,
+	serviceStatus: null,
+	crontab: '',
 	updateInfo: null,
 	updateProgress: null,
 	updateProgressActive: false,
@@ -1033,6 +1115,9 @@ return view.extend({
 		var progressInfo = parseUpdateResult(data[5], 'progress');
 		var m, s, o, p, f, enabledOpt, ifaceModeOpt, noHop, payloadTypeOpt, filterTypeOpt, silentOpt;
 
+		this.serviceEnabled = serviceEnabled;
+		this.serviceStatus = serviceStatus;
+		this.crontab = crontab;
 		this.updateInfo = updateInfo;
 		this.updateProgress = getInitialProgressPayload(progressInfo);
 		if (isUpdateProgressRunning(this.updateProgress)) {
@@ -1058,26 +1143,19 @@ return view.extend({
 
 		o = s.taboption('status', form.DummyValue, '_runtime', '当前状态');
 		o.rawhtml = true;
-		o.cfgvalue = function() {
-			return renderRuntimeStatus(serviceEnabled, serviceStatus);
-		};
+		o.cfgvalue = L.bind(function() {
+			return renderRuntimeStatus(this.serviceEnabled, this.serviceStatus);
+		}, this);
 
 		o = s.taboption('status', form.DummyValue, '_service_actions', '服务控制');
-		o.renderWidget = function() {
-			return renderActionGroup([
-				{ title: '启动服务', style: 'apply', action: 'start_now', success: 'FakeSIP 已启动', label: '启动', disabled: serviceStatus.running },
-				{ title: '停止服务', style: 'reset', action: 'stop_now', success: 'FakeSIP 已停止', label: '停止', disabled: !serviceStatus.running },
-				{ title: '重启服务', style: 'reload', action: 'restart_now', success: 'FakeSIP 已重启', label: '重启', disabled: !serviceStatus.running }
-			]);
-		};
+		o.renderWidget = L.bind(function() {
+			return renderServiceActions(this.serviceStatus, this);
+		}, this);
 
 		o = s.taboption('status', form.DummyValue, '_maintenance_actions', '定时任务');
-		o.renderWidget = function() {
-			return renderActionGroup([
-				{ title: '更新定时任务', style: 'apply', action: 'update_cron', success: '定时任务已更新', label: '更新', disabled: !serviceEnabled },
-				{ title: '清理残留规则', style: 'remove', action: 'cleanup_rules', success: '残留规则清理完成', label: '清理', disabled: serviceStatus.running }
-			], '定时重启：' + getScheduleText(crontab));
-		};
+		o.renderWidget = L.bind(function() {
+			return renderMaintenanceActions(this.serviceEnabled, this.serviceStatus, this.crontab, this);
+		}, this);
 
 		o = s.taboption('update', form.DummyValue, '_online_update', '版本更新');
 		o.renderWidget = L.bind(function() {
@@ -1228,9 +1306,9 @@ return view.extend({
 
 		o = s.taboption('schedule', form.DummyValue, '_schedule_state', '当前计划');
 		o.rawhtml = true;
-		o.cfgvalue = function() {
-			return '<div class="cbi-value-field">' + escapeHTML(getScheduleText(crontab)) + '</div>';
-		};
+		o.cfgvalue = L.bind(function() {
+			return renderScheduleState(this.crontab);
+		}, this);
 
 		silentOpt = s.taboption('logs', form.Flag, 'silent', '静默模式');
 		silentOpt.default = '1';
