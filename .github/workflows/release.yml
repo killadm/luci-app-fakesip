@@ -70,7 +70,28 @@ jobs:
                       items.append(item)
               return items
 
-          targets = parse_csv(os.environ["INPUT_TARGETS"])
+          def normalize_targets(items, defaults):
+              aliases = {}
+              normalized = []
+              seen = set()
+
+              if not items:
+                  items = defaults
+
+              for target in defaults:
+                  aliases[target] = target
+                  aliases[target.replace("/", "-")] = target
+
+              for item in items:
+                  target = aliases.get(item, item)
+                  if target and target not in seen:
+                      seen.add(target)
+                      normalized.append(target)
+
+              return normalized
+
+          default_targets = parse_csv(os.environ["DEFAULT_TARGETS"])
+          targets = normalize_targets(parse_csv(os.environ["INPUT_TARGETS"]), default_targets)
           distro_specs = [
               {
                   "distro": "openwrt",
@@ -112,7 +133,11 @@ jobs:
                       })
 
           if not include:
-              raise SystemExit("No OpenWrt or ImmortalWrt versions configured")
+              raise SystemExit(
+                  "No supported OpenWrt or ImmortalWrt release targets found. "
+                  "Use target paths like x86/64 or mediatek/filogic; default target slugs "
+                  "like x86-64 and mediatek-filogic are also accepted."
+              )
 
           print(json.dumps({"include": include}, separators=(",", ":")))
           PY
