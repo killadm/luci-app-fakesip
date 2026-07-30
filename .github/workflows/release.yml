@@ -59,6 +59,9 @@ jobs:
           python3 <<'PY' > matrix.json
           import json
           import os
+          import sys
+          import urllib.error
+          import urllib.request
 
           def parse_csv(value):
               seen = set()
@@ -69,6 +72,20 @@ jobs:
                       seen.add(item)
                       items.append(item)
               return items
+
+          def url_exists(url):
+              request = urllib.request.Request(url, headers={"User-Agent": "GitHub-Actions"})
+              try:
+                  with urllib.request.urlopen(request, timeout=20):
+                      return True
+              except urllib.error.HTTPError as exc:
+                  if exc.code == 404:
+                      return False
+                  raise
+              except urllib.error.URLError as exc:
+                  raise SystemExit(f"Unable to check {url}: {exc}") from exc
+              except TimeoutError as exc:
+                  raise SystemExit(f"Timed out while checking {url}") from exc
 
           targets = parse_csv(os.environ["INPUT_TARGETS"])
           distro_specs = [
@@ -92,11 +109,17 @@ jobs:
               raise SystemExit("No OpenWrt targets configured")
 
           include = []
+          skipped = []
           for spec in distro_specs:
               for version in spec["versions"]:
                   major = int(version.split(".", 1)[0])
                   expected_package_format = "apk" if major >= 25 else "ipk"
                   for target in targets:
+                      sdk_base_url = f"{spec['sdk_base_url']}/{version}/targets/{target}"
+                      if not url_exists(f"{sdk_base_url}/sha256sums"):
+                          skipped.append((spec["distro_name"], version, target))
+                          continue
+
                       target_slug = target.replace("/", "-")
                       asset_prefix = f"{spec['distro']}-{version}-{target_slug}"
                       include.append({
@@ -111,8 +134,14 @@ jobs:
                           "asset_prefix": asset_prefix,
                       })
 
+          if skipped:
+              print(
+                  f"::warning::Skipped {len(skipped)} unsupported release matrix entries",
+                  file=sys.stderr,
+              )
+
           if not include:
-              raise SystemExit("No OpenWrt or ImmortalWrt versions configured")
+              raise SystemExit("No supported OpenWrt or ImmortalWrt release targets found")
 
           print(json.dumps({"include": include}, separators=(",", ":")))
           PY
