@@ -271,12 +271,13 @@ opkg_version() {
 }
 
 apk_version() {
-	awk -v pkg="$1" '
-		$1 == "P:" {
+	# APK database fields use P:name and V:version without a space.
+	awk -F ':' -v pkg="$1" '
+		$1 == "P" {
 			found = ($2 == pkg)
 			next
 		}
-		found && $1 == "V:" {
+		found && $1 == "V" {
 			sub(/^V:[ \t]*/, "", $0)
 			print
 			exit
@@ -300,12 +301,12 @@ opkg_arch() {
 }
 
 apk_arch() {
-	awk -v pkg="$1" '
-		$1 == "P:" {
+	awk -F ':' -v pkg="$1" '
+		$1 == "P" {
 			found = ($2 == pkg)
 			next
 		}
-		found && $1 == "A:" {
+		found && $1 == "A" {
 			sub(/^A:[ \t]*/, "", $0)
 			print
 			exit
